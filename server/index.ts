@@ -16,6 +16,7 @@ import {
 import { config } from "./config.js";
 import { daemonAvailable, endpointLabel } from "./daemon.js";
 import { ScheduledTaskScheduler } from "./scheduled-task-scheduler.js";
+import { SubagentReturnLoop } from "./subagent-return-loop.js";
 import {
   startScheduledTaskControlSocket,
   stopScheduledTaskControlSocket,
@@ -41,6 +42,7 @@ const app = express();
 const server = createServer(app);
 const scheduledTaskStore = new ScheduledTaskStore(config.scheduledTasksPath);
 const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore);
+const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath);
 
 function originAllowed(origin: string | undefined): boolean {
   return Boolean(origin && config.allowedOrigins.has(origin));
@@ -121,6 +123,11 @@ app.post(
     }
   },
 );
+
+app.get("/api/subagent-returns/status", requireSession, (_request, response) => {
+  response.setHeader("Cache-Control", "no-store");
+  response.json({ ...subagentReturnLoop.status(), configured: config.subagentReturnEnabled });
+});
 
 app.get("/api/status", requireSession, async (_request, response, next) => {
   try {
@@ -423,6 +430,7 @@ const closeBridge = attachBridge(server);
 await prepareAuthentication();
 await scheduledTaskStore.initialize();
 await scheduledTaskScheduler.start();
+if (config.subagentReturnEnabled) await subagentReturnLoop.start();
 const scheduledTaskControlSocket = await startScheduledTaskControlSocket(
   scheduledTaskStore,
   scheduledTaskScheduler,
@@ -438,6 +446,7 @@ server.listen(config.port, config.host, () => {
 
 function shutdown(): void {
   scheduledTaskScheduler.stop();
+  subagentReturnLoop.stop();
   closeBridge();
   void stopScheduledTaskControlSocket(scheduledTaskControlSocket).catch(
     () => undefined,
