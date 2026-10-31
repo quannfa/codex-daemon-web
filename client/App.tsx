@@ -1908,6 +1908,8 @@ function WorkspaceApp() {
   const [projectRenameId, setProjectRenameId] = useState<string|null>(null);
   const [projectRenameValue, setProjectRenameValue] = useState("");
   const [projectMoveThread, setProjectMoveThread] = useState<ThreadSummary|null>(null);
+  const [archiveConfirmThread,setArchiveConfirmThread]=useState<ThreadSummary|null>(null);
+  const [archiveMutationBusy,setArchiveMutationBusy]=useState(false);
   const [projectMoveTarget, setProjectMoveTarget] = useState("");
   const [projectMutationBusy, setProjectMutationBusy] = useState(false);
 
@@ -5300,27 +5302,37 @@ function WorkspaceApp() {
   );
 
   const archiveThread = async (thread: ThreadSummary) => {
-    if (!client) return;
+    if (!client || archiveMutationBusy) return;
+    // Never mutate the archive state on the first click: all archive entry
+    // points (sidebar row and context menu, including subagents) use this.
+    if (!archivedThreads) {
+      setArchiveConfirmThread(thread);
+      return;
+    }
     try {
-      await client.request(
-        archivedThreads ? "thread/unarchive" : "thread/archive",
-        { threadId: thread.id },
-      );
-      setThreads((current) =>
-        current.filter((entry) => entry.id !== thread.id),
-      );
-      if (selectedThread?.id === thread.id) newConversation();
-      setNotice({
-        tone: "success",
-        text: archivedThreads
-          ? "Conversation restored."
-          : "Conversation archived.",
-      });
-    } catch (error) {
-      setNotice({
-        tone: "error",
-        text: `Could not update conversation: ${shortError(error)}`,
-      });
+      await client.request("thread/unarchive",{threadId:thread.id});
+      setThreads(current=>current.filter(entry=>entry.id!==thread.id));
+      if(selectedThread?.id===thread.id)newConversation();
+      setNotice({tone:"success",text:"Conversation restored."});
+    }catch(error){
+      setNotice({tone:"error",text:`Could not restore conversation: ${shortError(error)}`});
+    }
+  };
+
+  const confirmArchiveThread = async () => {
+    const thread=archiveConfirmThread;
+    if(!client||!thread||archiveMutationBusy)return;
+    setArchiveMutationBusy(true);
+    try{
+      await client.request("thread/archive",{threadId:thread.id});
+      setArchiveConfirmThread(null);
+      setThreads(current=>current.filter(entry=>entry.id!==thread.id));
+      if(selectedThread?.id===thread.id)newConversation();
+      setNotice({tone:"success",text:"Conversation archived."});
+    }catch(error){
+      setNotice({tone:"error",text:`Could not archive conversation: ${shortError(error)}`});
+    }finally{
+      setArchiveMutationBusy(false);
     }
   };
 
@@ -6032,6 +6044,33 @@ function WorkspaceApp() {
             document.body,
           )
         : null}
+
+      {archiveConfirmThread ? createPortal(
+        <div className="modal-scrim settings-scrim"
+          onClick={()=>{if(!archiveMutationBusy)setArchiveConfirmThread(null);}}>
+          <div className="project-move-panel" role="alertdialog" aria-modal="true"
+            aria-labelledby="archive-confirm-title" aria-describedby="archive-confirm-description"
+            onClick={event=>event.stopPropagation()}
+            onKeyDown={event=>{if(event.key==="Escape"&&!archiveMutationBusy)setArchiveConfirmThread(null);}}>
+            <h3 id="archive-confirm-title">Archive conversation?</h3>
+            <p title={archiveConfirmThread.name||archiveConfirmThread.preview}>
+              {archiveConfirmThread.parentThreadId ? "Subagent · " : ""}
+              {archiveConfirmThread.agentNickname||titleFor(archiveConfirmThread)}
+            </p>
+            <small id="archive-confirm-description">
+              This conversation will disappear from the active list. You can restore it from Archived conversations.
+            </small>
+            <div className="project-move-actions">
+              <button type="button" autoFocus disabled={archiveMutationBusy}
+                onClick={()=>setArchiveConfirmThread(null)}>Cancel</button>
+              <button type="button" disabled={archiveMutationBusy}
+                onClick={()=>void confirmArchiveThread()}>
+                {archiveMutationBusy?"Archiving…":"Confirm archive"}
+              </button>
+            </div>
+          </div>
+        </div>,document.body
+      ):null}
 
       {projectMoveThread ? createPortal(
         <div className="modal-scrim settings-scrim" onClick={()=>!projectMutationBusy&&setProjectMoveThread(null)}>
