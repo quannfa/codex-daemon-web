@@ -29,6 +29,8 @@ import {
   X,
 } from "lucide-react";
 import {
+  createContext,
+  useContext,
   useCallback,
   useEffect,
   useMemo,
@@ -45,6 +47,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
+import ThreadGoalPanel from "./ThreadGoalPanel";
+import FileReferenceViewer from "./FileReferenceViewer";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
@@ -70,6 +74,11 @@ import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./th
 import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
 import "./styles.css";
 
+type FileReferenceContextValue={
+  client:RpcClient|null;cwd:string;
+  openThread:(threadId:string)=>void;
+};
+const FileReferenceContext=createContext<FileReferenceContextValue|null>(null);
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
 type TimelineGroup =
   | {
@@ -1941,6 +1950,7 @@ function WorkspaceApp() {
   const [threadDetails, setThreadDetails] = useState<ThreadDetails | null>(
     null,
   );
+  const [goalRevision,setGoalRevision]=useState(0);
   const [threadTokenUsage, setThreadTokenUsage] =
     useState<ThreadTokenUsage | null>(null);
   const selectedRef = useRef<string | null>(null);
@@ -2893,6 +2903,11 @@ function WorkspaceApp() {
         return;
       }
 
+      if (method === "thread/goal/updated" || method === "thread/goal/cleared") {
+        if(asString(params.threadId)===selectedRef.current)
+          setGoalRevision(value=>value+1);
+        return;
+      }
       if (method === "thread/queue/changed") {
         const threadId = asString(params.threadId);
         if (threadId && threadId === selectedRef.current && client)
@@ -5949,6 +5964,10 @@ function WorkspaceApp() {
         </div>,document.body
       ):null}
 
+      <FileReferenceContext.Provider value={{
+        client,cwd:cwd||selectedThread?.cwd||"",
+        openThread:(threadId:string)=>{void navigateToThread(threadId,[],"push");},
+      }}>
       <main className="main-panel">
         <header className="topbar">
           {sidebarCollapsed ? (
@@ -6025,6 +6044,10 @@ function WorkspaceApp() {
             </label>
           </div>
         </header>
+
+        {selectedThread && client ? <ThreadGoalPanel key={selectedThread.id}
+          client={client} threadId={selectedThread.id} revision={goalRevision}
+          onError={error=>setNotice({tone:"error",text:"Goal: "+error})}/> : null}
 
         {status.daemon.available ? null : (
           <div className="daemon-banner" role="status">
@@ -7018,6 +7041,7 @@ function WorkspaceApp() {
           </form>
         </div>
       </main>
+      </FileReferenceContext.Provider>
 
       {approvalPrompt ? (
         <ApprovalDialog
@@ -7973,6 +7997,8 @@ function TimelineCard({
 }
 
 function UserInputPart({ part }: { part: Record<string, unknown> }) {
+  const context=useContext(FileReferenceContext);
+  const [preview,setPreview]=useState<string|null>(null);
   if (part.type === "text")
     return <div className="user-text">{asString(part.text)}</div>;
   if (part.type === "image") {
@@ -7985,12 +8011,18 @@ function UserInputPart({ part }: { part: Record<string, unknown> }) {
       <span className="unsupported-attachment">Image attachment</span>
     );
   }
-  if (part.type === "localImage")
-    return (
-      <span className="unsupported-attachment">
-        Image · {asString(part.path).split("/").at(-1)}
-      </span>
-    );
+  if (part.type === "localImage"){
+    const path=asString(part.path);
+    const fullPath=path&&context?localReferencePath(path,context.cwd):null;
+    if(fullPath&&context?.client)return <>
+      <button type="button" className="markdown-local-link" onClick={()=>setPreview(fullPath)}>
+        Image · {path.split("/").at(-1)}
+      </button>
+      {preview?<FileReferenceViewer client={context.client} path={preview}
+        onClose={()=>setPreview(null)}/>:null}
+    </>;
+    return <span className="unsupported-attachment">Image · {path.split("/").at(-1)}</span>;
+  }
   if (part.type === "audio" || part.type === "localAudio")
     return <span className="unsupported-attachment">Audio attachment</span>;
   if (part.type === "skill")
@@ -8255,7 +8287,7 @@ function MarkdownContent({ text }: { text: string }) {
         urlTransform={safeMarkdownUrl}
         components={{
           a: MarkdownLink,
-          img: ({ alt }) => <span>{alt}</span>,
+          img: MarkdownImage,
         }}
       >
         {text}
@@ -8264,24 +8296,64 @@ function MarkdownContent({ text }: { text: string }) {
   );
 }
 
-function safeMarkdownUrl(value: string): string {
-  if (!value.trim()) return "";
-  try {
-    const url = new URL(value, window.location.href);
-    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
-  } catch {
-    return "";
+function localReferencePath(href:string,cwd:string):string|null {
+  let path=href.trim();
+  if(!path)return null;
+  if(/^file:\/\//i.test(path)){
+    try{const u=new URL(path);if(u.hostname&&u.hostname!=="localhost")return null;path=decodeURIComponent(u.pathname);}
+    catch{return null;}
+  }else if(/^[a-z][a-z0-9+.-]*:/i.test(path))return null;
+  else{
+    path=path.split("#")[0].split("?")[0];
+    try{path=decodeURIComponent(path);}catch{return null;}
   }
+  if(path.startsWith("/") && !path.startsWith("//"))return path;
+  if(!cwd.startsWith("/")||path.startsWith("/")||path.includes("\\")||path.includes("\0"))return null;
+  const elements=(cwd+"/"+path).split("/");
+  const stack:string[]=[];
+  for(const element of elements){if(!element||element===".")continue;if(element==="..")stack.pop();else stack.push(element);}
+  return "/"+stack.join("/");
 }
-
-function MarkdownLink({ href, children }: ComponentProps<"a">) {
-  const safeHref = href ? safeMarkdownUrl(href) : "";
-  if (!safeHref) return <span>{children}</span>;
-  return (
-    <a href={safeHref} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  );
+function safeMarkdownUrl(value:string):string{
+  if(!value.trim())return "";
+  if(/^codex:\/\/threads\/[a-f0-9-]{20,}$/i.test(value))return value;
+  if(/^file:\/\//i.test(value)||value.startsWith("/")||value.startsWith("./")||value.startsWith("../"))return value;
+  try{const url=new URL(value);return ["http:","https:"].includes(url.protocol)?url.href:"";}
+  catch{return (/^[\w.-]+\/[\w./-]+$/.test(value)||
+    /^[\w.-]+\.(?:md|txt|pdf|png|jpg|jpeg|webp|svg|json|csv|py|ts|tsx|js|log|yaml|yml)$/i.test(value))?value:"";}
+}
+function MarkdownLink({href,children}:ComponentProps<"a">){
+  const context=useContext(FileReferenceContext);
+  const [file,setFile]=useState<string|null>(null);
+  const value=href||"";
+  const threadId=value.match(/^codex:\/\/threads\/([a-f0-9-]{20,})/i)?.[1];
+  if(threadId && context)
+    return <button type="button" className="markdown-local-link" onClick={()=>context.openThread(threadId)}>{children}</button>;
+  const web=/^https?:\/\//i.test(value) ? safeMarkdownUrl(value):"";
+  if(web)return <a href={web} target="_blank" rel="noopener noreferrer">{children}</a>;
+  const path=context?localReferencePath(value,context.cwd):null;
+  if(path && context?.client)return <>
+    <button type="button" className="markdown-local-link" title={path}
+      onClick={()=>setFile(path)}>{children}</button>
+    {file?<FileReferenceViewer client={context.client} path={file} onClose={()=>setFile(null)}/>:null}
+  </>;
+  return <span title={value||undefined}>{children}</span>;
+}
+function MarkdownImage({src,alt}:ComponentProps<"img">){
+  const context=useContext(FileReferenceContext);
+  const [file,setFile]=useState<string|null>(null);
+  const url=safeImageUrl(src);
+  if(url)return <a href={url} target="_blank" rel="noopener noreferrer">
+    <img src={url} alt={alt||"Embedded image"} className="markdown-embedded-image" loading="lazy" referrerPolicy="no-referrer"/>
+  </a>;
+  const path=src&&context?localReferencePath(src,context.cwd):null;
+  if(path&&context?.client)return <>
+    <button type="button" className="markdown-local-link" onClick={()=>setFile(path)}>
+      Preview image: {alt||path.split("/").at(-1)}
+    </button>
+    {file?<FileReferenceViewer client={context.client} path={file} onClose={()=>setFile(null)}/>:null}
+  </>;
+  return <span title={src||undefined}>{alt||"Image reference"}</span>;
 }
 
 function ApprovalDialog({
