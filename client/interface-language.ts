@@ -136,6 +136,9 @@ const strings:Record<string,string> = {
   "This updates the Codex project assignment, not the conversation's working directory.":"此操作仅更新 Codex 项目归属，不更改会话工作目录。",
   "Move conversation":"移动会话",
   "Move to project…":"移入／移出项目…",
+  "Plugins and files":"插件与文件",
+  "No matching installed plugins or files.":"没有匹配的已安装插件或文件。",
+
   "Move":"移动",
   "Rename":"重命名",
   "Archive":"归档",

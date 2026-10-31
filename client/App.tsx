@@ -119,7 +119,7 @@ type PushSetupState =
 type AppNotice = { tone: "info" | "error" | "success"; text: string };
 
 type ComposerCompletionTarget = {
-  kind: "command" | "file" | "skill";
+  kind: "command" | "file" | "skill" | "mention";
   start: number;
   end: number;
   query: string;
@@ -143,6 +143,12 @@ type ComposerCompletionItem =
       name: string;
       description: string;
       path: string;
+    }
+  | {
+      kind: "plugin";
+      name: string;
+      id: string;
+      description: string;
     };
 type SelectedSkillReference = { name: string; path: string };
 type AgentIdentity = { glyph: string; color: number };
@@ -1464,12 +1470,12 @@ function completionTargetAt(
     };
   }
   const match = /(^|[\s([{])([@$])([^\s@$]*)$/.exec(prefix);
-  if (!match || (match[2] === "@" && !match[3])) return null;
+  if (!match) return null;
   const start = caret - match[2].length - match[3].length;
   const remaining = text.slice(caret);
   const following = /^[^\s@$]*/.exec(remaining)?.[0] ?? "";
   return {
-    kind: match[2] === "@" ? "file" : "skill",
+    kind: match[2] === "@" ? "mention" : "skill",
     start,
     end: caret + following.length,
     query: match[3],
@@ -2061,6 +2067,9 @@ function WorkspaceApp() {
   const skillsCacheRef = useRef(
     new Map<string, SkillsListResponse["data"][number]["skills"]>(),
   );
+  const pluginsCacheRef=useRef(
+    new Map<string,Extract<ComposerCompletionItem,{kind:"plugin"}>[]>(),
+  );
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const uploadsRef = useRef(uploads);
   const updateUploads = (
@@ -2112,6 +2121,7 @@ function WorkspaceApp() {
     Record<string, string[]>
   >({});
   const { client, connection, connectionMessage, attach, detach } = useRpc();
+  useEffect(()=>{pluginsCacheRef.current.clear();},[client]);
   const handlersRef = useRef({
     onNotification: (_method: string, _params: Record<string, unknown>) => {},
     onServerRequest: (_request: ApprovalPrompt) => {},
@@ -4037,15 +4047,6 @@ function WorkspaceApp() {
       setCompletionError("");
       return;
     }
-    if (target.kind === "file" && (!completionCwd || !target.query)) {
-      setCompletionItems([]);
-      setCompletionLoading(false);
-      setCompletionError(
-        completionCwd ? "" : "Set a working directory to search files.",
-      );
-      return;
-    }
-
     setCompletionItems([]);
     setCompletionIndex(0);
     setCompletionLoading(true);
@@ -4053,35 +4054,59 @@ function WorkspaceApp() {
     let sentFileSearch = false;
     const timer = window.setTimeout(
       () => {
-        if (target.kind === "file") {
-          sentFileSearch = true;
-          void client
-            .request<{ files: FuzzyFileSearchResult[] }>("fuzzyFileSearch", {
-              query: target.query,
-              roots: [completionCwd],
-              cancellationToken: "codex-daemon-web-composer",
-            })
-            .then((response) => {
-              if (completionRequestRef.current !== requestId) return;
-              setCompletionItems(
-                response.files.map((file) => ({
-                  kind: "file" as const,
-                  path: file.path,
-                  label:
-                    file.path.startsWith(`${file.root}/`) ||
-                    file.path.startsWith(`${file.root}\\`)
-                      ? file.path.slice(file.root.length + 1)
-                      : file.path,
-                  isDirectory: file.match_type === "directory",
-                })),
-              );
-              setCompletionLoading(false);
-            })
-            .catch((error: unknown) => {
-              if (completionRequestRef.current !== requestId) return;
-              setCompletionError(shortError(error));
-              setCompletionLoading(false);
-            });
+        if (target.kind === "mention") {
+          const cacheKey=completionCwd||"__global__";
+          const cached=pluginsCacheRef.current.get(cacheKey);
+          const loadPlugins=cached
+            ? Promise.resolve(cached)
+            : client.request<{marketplaces:Array<{plugins:Array<{
+                id:string;name:string;installed:boolean;enabled:boolean;
+                interface?:{displayName?:string|null;shortDescription?:string|null}|null;
+              }>}>}>("plugin/installed",{
+                ...(completionCwd?{cwds:[completionCwd]}:{}),
+              }).then(response=>{
+                const byId=new Map<string,Extract<ComposerCompletionItem,{kind:"plugin"}>>();
+                for(const marketplace of response.marketplaces||[])
+                  for(const plugin of marketplace.plugins||[]){
+                    if(!plugin.installed||!plugin.enabled||!/^[a-zA-Z0-9_.@-]+$/.test(plugin.id))continue;
+                    const name=plugin.interface?.displayName?.trim()||plugin.name;
+                    byId.set(plugin.id,{
+                      kind:"plugin",name,id:plugin.id,
+                      description:plugin.interface?.shortDescription||plugin.name,
+                    });
+                  }
+                const list=[...byId.values()].sort((a,b)=>a.name.localeCompare(b.name));
+                pluginsCacheRef.current.set(cacheKey,list);
+                return list;
+              });
+          // @ lists installed plugins immediately; @query also searches cwd files.
+          const fileRequest=completionCwd&&target.query
+            ? (sentFileSearch=true,client.request<{files:FuzzyFileSearchResult[]}>(
+                "fuzzyFileSearch",{
+                  query:target.query,roots:[completionCwd],
+                  cancellationToken:"codex-daemon-web-composer",
+                }).then(response=>response.files.slice(0,30).map(file=>({
+                  kind:"file" as const,path:file.path,
+                  label:file.path.startsWith(file.root+"/")||file.path.startsWith(file.root+"\\")
+                    ? file.path.slice(file.root.length+1):file.path,
+                  isDirectory:file.match_type==="directory",
+                }))).catch(()=>[]))
+            : Promise.resolve([] as Extract<ComposerCompletionItem,{kind:"file"}>[]);
+          void Promise.allSettled([loadPlugins,fileRequest]).then(results=>{
+            if(completionRequestRef.current!==requestId)return;
+            const plugins=results[0].status==="fulfilled"?results[0].value:[];
+            const files=results[1].status==="fulfilled"?results[1].value:[];
+            const query=target.query.toLocaleLowerCase();
+            const matching=plugins.filter(plugin=>
+              !disabledPluginIds.includes(plugin.id) && (!query||
+              plugin.name.toLocaleLowerCase().includes(query)||
+              plugin.description.toLocaleLowerCase().includes(query)||
+              plugin.id.toLocaleLowerCase().includes(query)));
+            setCompletionItems([...matching,...files]);
+            if(results[0].status==="rejected"&&!files.length)
+              setCompletionError(shortError(results[0].reason));
+            setCompletionLoading(false);
+          });
           return;
         }
 
@@ -4130,7 +4155,7 @@ function WorkspaceApp() {
             setCompletionLoading(false);
           });
       },
-      target.kind === "file" ? 140 : 80,
+      target.kind === "mention" ? 110 : 80,
     );
 
     return () => {
@@ -4161,6 +4186,7 @@ function WorkspaceApp() {
     selectedThread?.canAcceptDirectInput,
     sending,
     skillsRevision,
+    disabledPluginIds,
     turnActive,
   ]);
 
@@ -4209,11 +4235,13 @@ function WorkspaceApp() {
           : item.path
         : item.kind === "skill"
           ? `$${item.name}`
-          : item.command;
+          : item.kind === "plugin"
+            ? `[@${item.name.replace(/[\[\]\n\r]/g,"")}](plugin://${item.id})`
+            : item.command;
     const suffix = composer.slice(completionTarget.end);
     const hasSeparator = /^\s/u.test(suffix);
     const separator = hasSeparator ? suffix : ` ${suffix}`;
-    const caret = completionTarget.start + inserted.length + 1;
+    const caret = completionTarget.start + inserted.length + (hasSeparator?0:1);
     const nextText =
       composer.slice(0, completionTarget.start) + inserted + separator;
     if (item.kind === "skill")
@@ -6465,8 +6493,8 @@ function WorkspaceApp() {
             {completionTarget && composerCanComplete ? (
               <div className="composer-completions" id="composer-completions">
                 <div className="composer-completions-heading">
-                  {completionTarget.kind === "file"
-                    ? "Files and folders"
+                  {completionTarget.kind === "mention"
+                    ? "Plugins and files"
                     : completionTarget.kind === "skill"
                       ? "Skills"
                       : "Commands"}
@@ -6506,16 +6534,26 @@ function WorkspaceApp() {
                         key={
                           item.kind === "command"
                             ? `${item.command}:${index}`
-                            : `${item.path}:${index}`
+                            : item.kind === "plugin"
+                              ? `plugin:${item.id}`
+                              : `${item.path}:${index}`
                         }
                         title={
-                          item.kind === "command" ? item.description : item.path
+                          item.kind === "command" ? item.description : item.kind === "plugin" ? item.description : item.path
                         }
                         onPointerDown={(event) => event.preventDefault()}
                         onMouseEnter={() => setCompletionIndex(index)}
                         onClick={() => selectCompletion(item)}
                       >
-                        {item.kind === "file" ? (
+                        {item.kind === "plugin" ? (
+                          <>
+                            <Code2 size={15} aria-hidden="true"/>
+                            <span className="composer-completion-copy">
+                              <strong>@{item.name}</strong>
+                              <small>{item.description}</small>
+                            </span>
+                          </>
+                        ) : item.kind === "file" ? (
                           <>
                             <FileText size={15} aria-hidden="true" />
                             <span className="composer-completion-copy">
@@ -6552,7 +6590,9 @@ function WorkspaceApp() {
                     <div className="composer-completion-status" role="status">
                       {completionTarget.kind === "command"
                         ? "No supported commands found."
-                        : `No ${completionTarget.kind === "file" ? "files" : "skills"} found.`}
+                        : completionTarget.kind === "mention"
+                          ? "No matching installed plugins or files."
+                          : "No skills found."}
                     </div>
                   )}
                 </div>
