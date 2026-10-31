@@ -4437,3 +4437,15 @@ html[data-keyboard-visible="true"] .composer-wrap {
 }
 .thread-status-legend > span { display: inline-flex; gap: 4px; align-items: center; }
 .thread-status-legend .thread-status-indicator { width: 7px; height: 7px; flex-basis: 7px; margin: 0; }
+
+/* Per-status marker preferences in the Settings modal. */
+.thread-indicator-preference-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.thread-indicator-preference-heading > div { display: flex; flex-direction: column; gap: 4px; }
+.thread-indicator-preference-heading > div > span { color: var(--muted); font-size: 9px; }
+.thread-indicator-preference-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.thread-indicator-preference-row > strong { flex: 1; min-width: 0; font-size: 10px; font-weight: 600; }
+.thread-indicator-preference-row > .thread-status-indicator { margin-right: 0; }
+.thread-indicator-preference-row > label { display: inline-flex; align-items: center; }
+.thread-indicator-preference-row input[type="color"] { width: 31px; height: 28px; padding: 2px; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+.thread-indicator-preference-row select { width: 82px; min-height: 28px; border: 1px solid var(--border); background: var(--surface-subtle); color: var(--ink); border-radius: 6px; font-size: 10px; }
+.thread-indicator-preference-row .settings-toggle { min-width: 46px; }

@@ -62,6 +62,7 @@ import type {
 } from "./types";
 import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
 import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./thread-status";
+import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
 import "./styles.css";
 
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
@@ -1859,6 +1860,15 @@ function WorkspaceApp() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
   const [scheduledTasksForIndicators, setScheduledTasksForIndicators] = useState<ScheduledTask[]>([]);
+  const [failedThreadIds, setFailedThreadIds] = useState<Set<string>>(() => new Set());
+  const [threadStatusPreferences, setThreadStatusPreferences] = useState(() => {
+    try { return readThreadStatusPreferences(localStorage); }
+    catch { return readThreadStatusPreferences({getItem: () => null}); }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(threadStatusPreferencesKey, JSON.stringify(threadStatusPreferences)); }
+    catch { /* Device preference storage may be unavailable. */ }
+  }, [threadStatusPreferences]);
 
   const [collapsedSubagents, setCollapsedSubagents] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem("codex-web.subagent-tree.v1") || "{}"); }
@@ -2847,6 +2857,21 @@ function WorkspaceApp() {
       }
 
       const threadId = asString(params.threadId);
+      if (threadId && method === "turn/started") {
+        setFailedThreadIds((old) => {
+          if (!old.has(threadId)) return old;
+          const updated = new Set(old); updated.delete(threadId); return updated;
+        });
+      }
+      if (threadId && method === "turn/completed" && isRecord(params.turn)) {
+        const failed = params.turn.status === "failed";
+        setFailedThreadIds((old) => {
+          if (failed === old.has(threadId)) return old;
+          const updated = new Set(old);
+          if (failed) updated.add(threadId); else updated.delete(threadId);
+          return updated;
+        });
+      }
       if (method === "turn/started" && client)
         void refreshThreads(client, archivedThreads, false);
       if (threadId && threadId !== selectedRef.current) return;
@@ -3232,6 +3257,13 @@ function WorkspaceApp() {
           }),
         ]);
         if (version !== loadVersionRef.current) return;
+        setFailedThreadIds((current) => {
+          const failed = turnPage.data[0]?.status === "failed";
+          if (failed === current.has(threadId)) return current;
+          const next = new Set(current);
+          if (failed) next.add(threadId); else next.delete(threadId);
+          return next;
+        });
         const sorted = [...page.data].reverse().map((entry) => ({ ...entry }));
         const merged = mergeHistoryWithLive(
           sorted,
@@ -5468,10 +5500,14 @@ function WorkspaceApp() {
             </select>
           </label>
           <div className="thread-status-legend" aria-label="Conversation status legend">
-            <span><i className="thread-status-indicator thread-status-idle" />Idle</span>
-            <span><i className="thread-status-indicator thread-status-working" />Working</span>
-            <span><i className="thread-status-indicator thread-status-decision" />Decision</span>
-            <span><i className="thread-status-indicator thread-status-waiting" />Agent / Scheduled</span>
+            {threadStatusOrder.filter((kind) => threadStatusPreferences[kind].enabled).map((kind) => (
+              <span key={kind}>
+                <i className="thread-status-indicator" style={{
+                  backgroundColor: threadStatusPreferences[kind].color,
+                  borderRadius: threadStatusPreferences[kind].shape === "circle" ? "50%" : "2px",
+                }} />{threadStatusLabels[kind]}
+              </span>
+            ))}
           </div>
           {filteredThreads.length === 0 ? (
             <div className="thread-list-empty">
@@ -5597,13 +5633,16 @@ function WorkspaceApp() {
                                     pendingDecision: pendingDecisionIds.has(thread.id),
                                     activeChild: activeChildParentIds.has(thread.id),
                                     scheduled: scheduledIndicatorIds.has(thread.id),
+                                    failedTurn: failedThreadIds.has(thread.id),
                                   });
-                                  return <span
+                                  const marker = threadStatusPreferences[indicator.kind];
+                                  return marker.enabled ? <span
                                     className={`thread-status-indicator thread-status-${indicator.kind}`}
+                                    style={{backgroundColor: marker.color, borderRadius: marker.shape === "circle" ? "50%" : "2px"}}
                                     title={indicator.label}
                                     aria-label={indicator.label}
                                     role="img"
-                                  />;
+                                  /> : null;
                                 })()}
                                 <span className="thread-copy">
                                   <span className="thread-name">
@@ -6582,6 +6621,55 @@ function WorkspaceApp() {
                             )}
                           </div>
                         )}
+                      </div>
+                      <div className="settings-preferences">
+                        <div className="thread-indicator-preference-heading">
+                          <div>
+                            <h3 className="settings-section-title">Conversation status markers</h3>
+                            <span>Configure the visibility, color and shape of each status on this device.</span>
+                          </div>
+                          <button type="button" className="settings-toggle"
+                            onClick={() => setThreadStatusPreferences(structuredClone(defaultThreadStatusPreferences))}>
+                            Reset
+                          </button>
+                        </div>
+                        {threadStatusOrder.map((kind) => (
+                          <div key={kind} className="thread-indicator-preference-row">
+                            <span className="thread-status-indicator"
+                              style={{backgroundColor: threadStatusPreferences[kind].color,
+                                borderRadius: threadStatusPreferences[kind].shape === "circle" ? "50%" : "2px"}}
+                              aria-hidden="true" />
+                            <strong>{threadStatusLabels[kind]}</strong>
+                            <label className="thread-indicator-color">
+                              <span className="sr-only">{threadStatusLabels[kind]} color</span>
+                              <input type="color" value={threadStatusPreferences[kind].color}
+                                aria-label={`${threadStatusLabels[kind]} color`}
+                                onChange={(event) => {
+                                  const color = event.target.value;
+                                  setThreadStatusPreferences((current) => ({...current, [kind]: {...current[kind],color}}));
+                                }} />
+                            </label>
+                            <label>
+                              <span className="sr-only">{threadStatusLabels[kind]} shape</span>
+                              <select aria-label={`${threadStatusLabels[kind]} shape`}
+                                value={threadStatusPreferences[kind].shape}
+                                onChange={(event) => {
+                                  const shape = event.target.value === "square" ? "square" : "circle";
+                                  setThreadStatusPreferences((current) => ({...current, [kind]: {...current[kind],shape}}));
+                                }}>
+                                <option value="circle">Circle</option>
+                                <option value="square">Square</option>
+                              </select>
+                            </label>
+                            <button type="button" className="settings-toggle"
+                              aria-label={`${threadStatusLabels[kind]} marker visibility`}
+                              aria-pressed={threadStatusPreferences[kind].enabled}
+                              onClick={() => setThreadStatusPreferences((current) => ({...current,
+                                [kind]: {...current[kind], enabled: !current[kind].enabled}}))}>
+                              {threadStatusPreferences[kind].enabled ? "On" : "Off"}
+                            </button>
+                          </div>
+                        ))}
                       </div>
                       <div className="settings-preferences">
                         <h3 className="settings-section-title">

@@ -1,7 +1,7 @@
 import type { ScheduledTask, ThreadSummary } from "./types";
 import { agentParentId } from "./project-sidebar";
 
-export type ThreadIndicator = "idle" | "working" | "decision" | "waiting";
+export type ThreadIndicator = "idle" | "working" | "decision" | "waiting" | "error";
 export type ThreadIndicatorInfo = { kind: ThreadIndicator; label: string };
 
 /** A paused or archived task is not an active schedule. */
@@ -38,8 +38,10 @@ export function activeSubagentParents(agents: ThreadSummary[]): Set<string> {
 
 export function threadIndicator(
   thread: ThreadSummary,
-  options: { pendingDecision?: boolean; activeChild?: boolean; scheduled?: boolean } = {},
+  options: { pendingDecision?: boolean; activeChild?: boolean; scheduled?: boolean; failedTurn?: boolean } = {},
 ): ThreadIndicatorInfo {
+  if (thread.status?.type === "systemError" || options.failedTurn)
+    return { kind: "error", label: "Codex error / failed turn" };
   const flags = thread.status?.type === "active" ? thread.status.activeFlags || [] : [];
   const needsDecision = options.pendingDecision || flags.some((flag) =>
     /approval|input|user.?response|elicitation|decision|permission/i.test(flag),
