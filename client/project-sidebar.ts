@@ -28,45 +28,6 @@ function activity(thread: ThreadSummary, archived: boolean): number {
   return Number.isFinite(value) && value > 0 ? (value < 1e12 ? value * 1000 : value) : 0;
 }
 
-export type SidebarMembership = {
-  projectlessThreadIds: string[];
-  projectThreadIds: string[];
-};
-
-export function projectCwdFor(thread: ThreadSummary, membership?: SidebarMembership): string {
-  if (membership?.projectlessThreadIds.includes(thread.id)) return "";
-  const cwd = thread.cwd || "";
-  if (membership?.projectThreadIds.includes(thread.id)) return cwd;
-  // Projectless chats receive dated output directories even though no project
-  // was selected. Normalize separators only for detection; preserve real cwd keys.
-  const path = cwd.replace(/\\/g, "/").replace(/^\/\/\?\//, "").replace(/\/+$/, "");
-  if (!path) return "";
-  if (/(?:^|\/)Documents\/Codex(?:\/\d{4}-\d{2}-\d{2}(?:\/.*)?)?$/i.test(path)) return "";
-  if (/^(?:\/home\/[^/]+|\/Users\/[^/]+|[a-z]:\/Users\/[^/]+|\/tmp|\/var\/tmp|\/)$/i.test(path)) return "";
-  return cwd;
-}
-
-export function groupProjectThreads(threads: ThreadSummary[], sort: ProjectSort, archived: boolean, membership?: SidebarMembership) {
-  const groups = new Map<string, { cwd: string; name: string; threads: ThreadSummary[]; activity: number }>();
-  for (const thread of threads) {
-    const cwd = projectCwdFor(thread, membership);
-    let group = groups.get(cwd);
-    if (!group) {
-      group = { cwd, name: cwd.split(/[\\/]/).filter(Boolean).pop() || cwd || "No project", threads: [], activity: 0 };
-      groups.set(cwd, group);
-    }
-    group.threads.push(thread);
-    group.activity = Math.max(group.activity, activity(thread, archived));
-  }
-  const byName = (a: { name: string; cwd: string }, b: { name: string; cwd: string }) =>
-    a.name.localeCompare(b.name) || a.cwd.localeCompare(b.cwd);
-  for (const group of groups.values()) {
-    group.threads.sort((a, b) => activity(b, archived) - activity(a, archived) || a.id.localeCompare(b.id));
-  }
-  return [...groups.values()].sort((a, b) =>
-    (sort === "recent" ? b.activity - a.activity : 0) || byName(a, b));
-}
-
 // Subagent threads are excluded from the default thread/list sources. Their
 // parent relationship is stored in source.subAgent.thread_spawn on this daemon.
 export const subagentSourceKinds = [
@@ -146,7 +107,7 @@ export function buildAgentTreeRows(
   return rows;
 }
 
-/** Canonical project memberships, with legacy cwd folders clearly labeled as workspaces. */
+/** Canonical Codex project memberships. No cwd-based inferred groups. */
 export type CodexProject = {
   id: string;
   name: string;
@@ -156,7 +117,7 @@ export type CodexProject = {
 export type SidebarView = "projects" | "status";
 export type SidebarThreadGroup = {
   cwd: string; name: string; path: string; projectId: string | null;
-  kind: "project" | "workspace" | "unassigned" | "status";
+  kind: "project" | "unassigned" | "status";
   threads: ThreadSummary[]; activity: number;
 };
 export const statusGroupOrder = ["error", "decision", "working", "waiting", "idle"] as const;
@@ -169,7 +130,6 @@ export function groupSidebarThreads(
   projects: CodexProject[],
   sort: ProjectSort,
   archived: boolean,
-  membership: SidebarMembership | undefined,
   view: SidebarView,
   getStatus: (thread: ThreadSummary) => string,
 ): SidebarThreadGroup[] {
@@ -192,14 +152,14 @@ export function groupSidebarThreads(
   for (const thread of threads) {
     let key:string;
     if (view === "status") key="status:"+getStatus(thread);
-    else if (thread.projectId && groups.has("project:"+thread.projectId)) key="project:"+thread.projectId;
+    else if (thread.projectId && groups.has("project:"+thread.projectId))
+      key="project:"+thread.projectId;
     else {
-      const cwd=projectCwdFor(thread,membership);
-      key=cwd?"workspace:"+cwd:"unassigned";
+      key="unassigned";
       if (!groups.has(key)) groups.set(key,{
-        cwd:key,name:cwd?"Workspace · "+(cwd.split(/[\\/]/).filter(Boolean).at(-1)||cwd):"No project",
-        path:cwd?"Unassigned · "+cwd:"Conversations without a project",
-        projectId:null,kind:cwd?"workspace":"unassigned",threads:[],activity:0,
+        cwd:key,name:"No project",
+        path:"Conversations without a Codex project assignment",
+        projectId:null,kind:"unassigned",threads:[],activity:0,
       });
     }
     const group=groups.get(key);

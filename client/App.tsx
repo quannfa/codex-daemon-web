@@ -3963,7 +3963,7 @@ function WorkspaceApp() {
   }).kind, [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds]);
   const projectGroups: SidebarThreadGroup[] = useMemo(
     () => groupSidebarThreads(filteredThreads,codexProjects,projectPreferences.sort,archivedThreads,
-      status?.sidebar,projectPreferences.view,statusForThread),
+      projectPreferences.view,statusForThread),
     [filteredThreads,codexProjects,projectPreferences.sort,projectPreferences.view,archivedThreads,status?.sidebar,statusForThread],
   );
 
