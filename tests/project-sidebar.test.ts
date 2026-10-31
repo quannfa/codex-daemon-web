@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupProjectThreads, readProjectPreferences } from "../client/project-sidebar";
+import { groupProjectThreads, readProjectPreferences, projectCwdFor } from "../client/project-sidebar";
 import type { ThreadSummary } from "../client/types";
 
 const thread = (id: string, cwd: string, recencyAt: number | null = 10, updatedAt = 5) =>
@@ -44,4 +44,30 @@ test("reads persisted preferences defensively and tolerates blocked storage", ()
   assert.equal(stored.collapsed["/bad"], undefined);
   assert.equal(stored.collapsed["__proto__"], true);
   assert.equal(read('{"sort":"invalid","collapsed":[]}').sort, "recent");
+});
+
+test("projectless generated directories collapse into one group on Linux and Windows", () => {
+  const win = (path: string) => path.replaceAll("/", String.fromCharCode(92));
+  const paths = [
+    "/home/zqf/Documents/Codex/2026-10-31/chat-one",
+    "/home/zqf/Documents/Codex/2026-10-30/chat-two/outputs",
+    win("C:/Users/Alice/Documents/Codex/2026-10-31/chat"),
+    win("//?/C:/Users/Alice/Documents/Codex/2026-10-31/chat"),
+    "/home/zqf", "/Users/Alice", win("C:/Users/Alice"), "/tmp", "/",
+  ];
+  const groups = groupProjectThreads(paths.map((cwd, i) => thread(String(i), cwd)), "recent", false);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].cwd, "");
+  assert.equal(groups[0].threads.length, paths.length);
+  assert.equal(projectCwdFor(thread("real", "/home/zqf/Documents/ChatGPT/CVPR")), "/home/zqf/Documents/ChatGPT/CVPR");
+  assert.equal(projectCwdFor(thread("real", "/home/zqf/Documents/Codex/my-repo")), "/home/zqf/Documents/Codex/my-repo");
+});
+
+test("explicit membership overrides path inference without changing conversation cwd", () => {
+  const assigned = thread("assigned", "/home/zqf/Documents/Codex/2026-10-31/real-project");
+  const projectless = thread("none", "/some/custom/output");
+  const membership = { projectlessThreadIds: ["none"], projectThreadIds: ["assigned"] };
+  assert.equal(projectCwdFor(assigned, membership), assigned.cwd);
+  assert.equal(projectCwdFor(projectless, membership), "");
+  assert.equal(projectless.cwd, "/some/custom/output");
 });

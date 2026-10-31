@@ -28,6 +28,7 @@ export type RpcServerRequest = RpcRequest;
 export type RpcMessage = RpcReply | RpcNotification | RpcServerRequest;
 
 export type DaemonStatus = {
+  sidebar?: { projectlessThreadIds: string[]; projectThreadIds: string[] };
   authenticated: boolean;
   daemon: {
     available: boolean;

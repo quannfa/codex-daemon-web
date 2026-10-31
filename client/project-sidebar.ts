@@ -27,10 +27,28 @@ function activity(thread: ThreadSummary, archived: boolean): number {
   return Number.isFinite(value) && value > 0 ? (value < 1e12 ? value * 1000 : value) : 0;
 }
 
-export function groupProjectThreads(threads: ThreadSummary[], sort: ProjectSort, archived: boolean) {
+export type SidebarMembership = {
+  projectlessThreadIds: string[];
+  projectThreadIds: string[];
+};
+
+export function projectCwdFor(thread: ThreadSummary, membership?: SidebarMembership): string {
+  if (membership?.projectlessThreadIds.includes(thread.id)) return "";
+  const cwd = thread.cwd || "";
+  if (membership?.projectThreadIds.includes(thread.id)) return cwd;
+  // Projectless chats receive dated output directories even though no project
+  // was selected. Normalize separators only for detection; preserve real cwd keys.
+  const path = cwd.replace(/\\/g, "/").replace(/^\/\/\?\//, "").replace(/\/+$/, "");
+  if (!path) return "";
+  if (/(?:^|\/)Documents\/Codex(?:\/\d{4}-\d{2}-\d{2}(?:\/.*)?)?$/i.test(path)) return "";
+  if (/^(?:\/home\/[^/]+|\/Users\/[^/]+|[a-z]:\/Users\/[^/]+|\/tmp|\/var\/tmp|\/)$/i.test(path)) return "";
+  return cwd;
+}
+
+export function groupProjectThreads(threads: ThreadSummary[], sort: ProjectSort, archived: boolean, membership?: SidebarMembership) {
   const groups = new Map<string, { cwd: string; name: string; threads: ThreadSummary[]; activity: number }>();
   for (const thread of threads) {
-    const cwd = thread.cwd || "";
+    const cwd = projectCwdFor(thread, membership);
     let group = groups.get(cwd);
     if (!group) {
       group = { cwd, name: cwd.split(/[\\/]/).filter(Boolean).pop() || cwd || "No project", threads: [], activity: 0 };

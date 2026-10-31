@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { readSidebarMetadata } from "./sidebar-metadata.js";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -85,6 +86,7 @@ async function statusPayload() {
   const available = await daemonAvailable();
   return {
     authenticated: true,
+    sidebar: await readSidebarMetadata(),
     daemon: {
       available,
       ...(available ? {} : { error: "Codex app-server is unavailable" }),

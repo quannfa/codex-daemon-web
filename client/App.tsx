@@ -3798,8 +3798,8 @@ function WorkspaceApp() {
     );
   }, [threadSearch, threads]);
   const projectGroups = useMemo(
-    () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads),
-    [filteredThreads, projectPreferences.sort, archivedThreads],
+    () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar),
+    [filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar],
   );
   useEffect(() => {
     if (sidebarSearchOpen && sidebarSection === "chats")

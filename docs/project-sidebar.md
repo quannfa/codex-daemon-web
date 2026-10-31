@@ -1,6 +1,15 @@
 # Project sidebar
 
-Conversations are grouped by the exact \`thread.cwd\` value. Each heading shows
+Project conversations are grouped by the exact \`thread.cwd\` value. Explicit
+desktop projectless membership takes priority over cwd, while explicit project
+assignments preserve project grouping. Without membership hints, generated
+\`Documents/Codex/YYYY-MM-DD/...\` directories (Linux or Windows), home directories,
+and generic temporary roots are collected under **No project**. Only grouping
+changes: the original conversation cwd is preserved.
+
+Membership hints are read from desktop state through the authenticated status
+response; the full desktop state is never returned. Missing or invalid state
+falls back to path detection. Each heading shows
 the directory name, full path, and number of currently loaded conversations.
 Different paths with the same directory name remain separate; missing paths
 appear under **No project**.
@@ -22,7 +31,7 @@ context menus, and scheduled tasks retain their original handlers.
 
 ## Verification
 
-- \`pnpm exec tsx --test tests/project-sidebar.test.ts\`
+- \`pnpm exec tsx --test tests/*.test.ts\`
 - \`pnpm check\`
 - \`pnpm build\`
 
