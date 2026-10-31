@@ -4449,3 +4449,26 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .thread-indicator-preference-row input[type="color"] { width: 31px; height: 28px; padding: 2px; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; background: transparent; }
 .thread-indicator-preference-row select { width: 82px; min-height: 28px; border: 1px solid var(--border); background: var(--surface-subtle); color: var(--ink); border-radius: 6px; font-size: 10px; }
 .thread-indicator-preference-row .settings-toggle { min-width: 46px; }
+/* Daemon account, quota, and installed app management */
+.codex-extensions { display:flex; flex-direction:column; gap:10px; padding:13px 0; border-top:1px solid var(--border-soft); }
+.codex-extension-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.codex-extension-heading .settings-section-title { margin:0; }
+.codex-extension-heading > span { font-size:10px; color:var(--muted); }
+.codex-account-lines { display:flex; flex-direction:column; gap:7px; }
+.codex-account-lines > div { display:flex; align-items:start; justify-content:space-between; gap:12px; font-size:10px; }
+.codex-account-lines span { color:var(--muted); flex:0 0 auto; }
+.codex-account-lines strong { color:var(--ink); font-weight:600; text-align:right; min-width:0; overflow-wrap:anywhere; }
+.codex-rate-bucket { display:flex; flex-direction:column; gap:7px; border:1px solid var(--border-soft); border-radius:8px; padding:10px; }
+.codex-rate-bucket > strong { font-size:11px; font-weight:650; }
+.codex-rate-window { display:flex; flex-direction:column; gap:4px; }
+.codex-rate-title { display:flex; justify-content:space-between; gap:8px; font-size:10px; }
+.codex-rate-title > span { color:var(--muted); }
+.codex-rate-track { height:6px; background:var(--surface-hover); border-radius:99px; overflow:hidden; }
+.codex-rate-track > div { height:100%; background:#29a567; border-radius:inherit; }
+.codex-rate-window small { color:var(--muted); font-size:9px; }
+.codex-plugin-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--border-soft); }
+.codex-plugin-row > div { display:flex; min-width:0; flex-direction:column; gap:3px; overflow-wrap:anywhere; }
+.codex-plugin-row strong { font-size:10px; font-weight:600; }
+.codex-plugin-row span, .codex-extensions-note { font-size:9px; color:var(--muted); line-height:1.4; }
+.codex-extension-success, .codex-extension-error { font-size:10px; line-height:1.5; }
+.codex-extension-success { color:#29a567; } .codex-extension-error { color:var(--text-danger); }

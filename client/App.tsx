@@ -44,6 +44,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
+import CodexAccountPlugins from "./CodexAccountPlugins";
 import type {
   ApprovalPrompt,
   DaemonStatus,
@@ -6622,6 +6623,7 @@ function WorkspaceApp() {
                           </div>
                         )}
                       </div>
+                      <CodexAccountPlugins rpc={client} visible={showSettings && connection === "online"} />
                       <div className="settings-preferences">
                         <div className="thread-indicator-preference-heading">
                           <div>
