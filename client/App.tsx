@@ -55,11 +55,13 @@ import type {
   ThreadItem,
   ThreadItemEntry,
   ThreadSummary,
+  ScheduledTask,
   ThreadTokenUsage,
   McpServerElicitationResponse,
   UserInput,
 } from "./types";
 import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
+import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./thread-status";
 import "./styles.css";
 
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
@@ -1856,6 +1858,8 @@ function WorkspaceApp() {
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
+  const [scheduledTasksForIndicators, setScheduledTasksForIndicators] = useState<ScheduledTask[]>([]);
+
   const [collapsedSubagents, setCollapsedSubagents] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem("codex-web.subagent-tree.v1") || "{}"); }
     catch { return {}; }
@@ -2628,6 +2632,17 @@ function WorkspaceApp() {
     },
     [archivedThreads, threadCursor],
   );
+
+  // Other daemon clients (notably Codex Desktop) may own the active thread.
+  // Poll its persisted status so sidebar indicators don't depend on this
+  // browser receiving that thread's turn notifications.
+  useEffect(() => {
+    if (!client || connection !== "online") return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshThreads(client, archivedThreads, false);
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [client, connection, archivedThreads, refreshThreads]);
 
   const loadModels = useCallback(
     async (rpc: RpcClient) => {
@@ -3837,6 +3852,10 @@ function WorkspaceApp() {
     () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar),
     [filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar],
   );
+  const scheduledIndicatorIds = useMemo(() => scheduledThreadIds(scheduledTasksForIndicators), [scheduledTasksForIndicators]);
+  const activeChildParentIds = useMemo(() => activeSubagentParents(subagentThreads), [subagentThreads]);
+  const pendingDecisionIds = useMemo(() => new Set(approvalQueue.map((prompt) => asString(prompt.params.threadId)).filter(Boolean)), [approvalQueue]);
+
   useEffect(() => {
     if (sidebarSearchOpen && sidebarSection === "chats")
       sidebarSearchRef.current?.focus();
@@ -5396,6 +5415,7 @@ function WorkspaceApp() {
           models={models}
           visible={sidebarSection === "tasks"}
           onCountChange={setScheduleCount}
+          onTasksChange={setScheduledTasksForIndicators}
           onOpenThread={(threadId) => navigateToThread(threadId, [], "push")}
         />
 
@@ -5447,6 +5467,12 @@ function WorkspaceApp() {
               <option value="name">Project name</option>
             </select>
           </label>
+          <div className="thread-status-legend" aria-label="Conversation status legend">
+            <span><i className="thread-status-indicator thread-status-idle" />Idle</span>
+            <span><i className="thread-status-indicator thread-status-working" />Working</span>
+            <span><i className="thread-status-indicator thread-status-decision" />Decision</span>
+            <span><i className="thread-status-indicator thread-status-waiting" />Agent / Scheduled</span>
+          </div>
           {filteredThreads.length === 0 ? (
             <div className="thread-list-empty">
               {threadSearch
@@ -5566,6 +5592,19 @@ function WorkspaceApp() {
                                 onPointerUp={clearThreadLongPress}
                                 onPointerCancel={clearThreadLongPress}
                               >
+                                {(() => {
+                                  const indicator = threadIndicator(thread, {
+                                    pendingDecision: pendingDecisionIds.has(thread.id),
+                                    activeChild: activeChildParentIds.has(thread.id),
+                                    scheduled: scheduledIndicatorIds.has(thread.id),
+                                  });
+                                  return <span
+                                    className={`thread-status-indicator thread-status-${indicator.kind}`}
+                                    title={indicator.label}
+                                    aria-label={indicator.label}
+                                    role="img"
+                                  />;
+                                })()}
                                 <span className="thread-copy">
                                   <span className="thread-name">
                                     {depth > 0 ? `Agent · ${agentDisplayName(thread) || titleFor(thread)}` : titleFor(thread)}
