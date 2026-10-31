@@ -80,6 +80,17 @@ type FileReferenceContextValue={
   openThread:(threadId:string)=>void;
 };
 const FileReferenceContext=createContext<FileReferenceContextValue|null>(null);
+type OptimisticSubmission = {
+  id:string;
+  threadId:string|null;
+  kind:"turn"|"steer"|"queue";
+  status:"sending"|"confirmed"|"unconfirmed";
+  input:UserInput[];
+  attachments:PendingUpload[];
+  selectedSkills:SelectedSkillReference[];
+  error?:string;
+  turnId?:string;
+};
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
 type TimelineGroup =
   | {
@@ -2008,6 +2019,8 @@ function WorkspaceApp() {
     [],
   );
   const [items, setItems] = useState<TimelineItem[]>([]);
+  const [optimisticMessages,setOptimisticMessages]=useState<OptimisticSubmission[]>([]);
+
   const itemsRef = useRef<TimelineItem[]>([]);
   const [activityGroupOverrides, setActivityGroupOverrides] = useState<
     Record<string, boolean>
@@ -4012,6 +4025,26 @@ function WorkspaceApp() {
       sidebarSearchRef.current?.focus();
   }, [sidebarSearchOpen, sidebarSection]);
   const timelineGrouping = useMemo(() => groupTimelineItems(items), [items]);
+  // Match by the official clientUserMessageId; this prevents duplicate local
+  // and daemon bubbles even when item notifications arrive before the RPC reply.
+  const deliveredClientIds=useMemo(()=>new Set(items
+    .filter(entry=>entry.item.type==="userMessage"&&typeof entry.item.clientId==="string")
+    .map(entry=>entry.item.clientId as string)),[items]);
+  const isOptimisticDelivered=(message:OptimisticSubmission)=>
+    deliveredClientIds.has(message.id) ||
+    (message.kind==="turn" && !!message.turnId && items.some(entry=>
+      entry.item.type==="userMessage"&&entry.turnId===message.turnId));
+  const visibleOptimistic=optimisticMessages.filter(message=>
+    !isOptimisticDelivered(message) &&
+    (message.threadId===selectedThread?.id ||
+      (message.threadId===null && !selectedThread && route.kind==="new"))
+  );
+  useEffect(()=>{
+    const completedIds=new Set(optimisticMessages.filter(isOptimisticDelivered).map(m=>m.id));
+    if(completedIds.size)
+      setOptimisticMessages(current=>current.filter(m=>!completedIds.has(m.id)));
+  },[items,optimisticMessages]);
+
 
   useEffect(() => {
     const requestId = ++completionRequestRef.current;
@@ -4275,6 +4308,51 @@ function WorkspaceApp() {
     setComposer("");
     if (composerRef.current) composerRef.current.style.height = "39px";
   };
+  const beginOptimistic=(message:OptimisticSubmission,sourceText:string)=>{
+    setOptimisticMessages(current=>[...current.filter(item=>item.id!==message.id),message]);
+    scrollWasNearBottom.current=true;
+    // Acknowledge the click visually before waiting for Codex's RPC response.
+    if((composerRef.current?.value??sourceText)===sourceText)clearComposerText();
+    clearUploadsIfUnchanged(message.attachments);
+  };
+  const changeOptimistic=(id:string,update:Partial<OptimisticSubmission>)=>{
+    setOptimisticMessages(current=>current.map(item=>item.id===id?{...item,...update}:item));
+  };
+  const restoreOptimistic=async(message:OptimisticSubmission)=>{
+    if(message.threadId && client){
+      try{
+        if(await threadHasClientMessage(client,message.threadId,message.id,itemsRef.current)){
+          setOptimisticMessages(current=>current.filter(item=>item.id!==message.id));
+          setNotice({tone:"info",text:"Codex already received this message. No retry is needed."});
+          return;
+        }
+        if(message.kind==="queue"){
+          const queue=await listThreadQueue(client,message.threadId);
+          if(queue.some(entry=>entry.clientUserMessageId===message.id)){
+            setOptimisticMessages(current=>current.filter(item=>item.id!==message.id));
+            setNotice({tone:"info",text:"This message is already in the queue. No retry is needed."});
+            void refreshThreadQueue(client,message.threadId);
+            return;
+          }
+        }
+      }catch(error){
+        setNotice({tone:"error",text:"Could not check delivery; the draft was not restored. "+shortError(error)});
+        return;
+      }
+    }
+    if((message.threadId||null)!==(selectedThread?.id||null)){
+      setNotice({tone:"info",text:"Open the original conversation before restoring this draft."});
+      return;
+    }
+    const text=message.input.filter(part=>part.type==="text").map(part=>part.type==="text"?part.text:"").join("\n");
+    setComposer(current=>current.trim()?current+"\n"+text:text);
+    updateUploads(current=>[...current,...message.attachments.filter(upload=>!current.some(x=>x.id===upload.id))]);
+    selectedSkillsRef.current=[...selectedSkillsRef.current,...message.selectedSkills];
+    setOptimisticMessages(current=>current.filter(item=>item.id!==message.id));
+    setNotice({tone:"info",text:"Draft restored. Verify it was not delivered before sending again."});
+    requestAnimationFrame(()=>composerRef.current?.focus());
+  };
+
 
   const runNewConversationCommand = () => {
     setCompletionTarget(null);
@@ -4429,6 +4507,7 @@ function WorkspaceApp() {
     let threadId = selectedThread?.id;
     const threadIdAtSend = threadId ?? null;
     const turnIdAtSend = activeTurnId;
+    let optimisticId:string|null=null;
     try {
       const input = userInputFromDraft(
         composerAtSend,
@@ -4463,22 +4542,16 @@ function WorkspaceApp() {
           });
           return;
         }
+        optimisticId=clientUserMessageId;
+        beginOptimistic({
+          id:clientUserMessageId,threadId:threadIdAtSend,
+          kind:"steer",status:"sending",input,
+          attachments:uploadsAtSend,selectedSkills:selectedSkillsAtSend,
+        },composerAtSend);
         await client.request<{ turnId: string }>("turn/steer", steerParams);
+        changeOptimistic(clientUserMessageId,{status:"confirmed"});
+        steerAttemptRef.current=null;
         void refreshThreads(client, archivedThreads, false);
-        if (
-          selectedRef.current === threadIdAtSend &&
-          loadVersionRef.current === loadVersionAtSend
-        ) {
-          const composerUnchanged =
-            (composerRef.current?.value ?? composerAtSend) === composerAtSend;
-          if (composerUnchanged) {
-            setComposer("");
-            if (composerRef.current) composerRef.current.style.height = "39px";
-          }
-          clearUploadsIfUnchanged(uploadsAtSend);
-          if (composerUnchanged && uploadsRef.current.length === 0)
-            steerAttemptRef.current = null;
-        }
         setNotice({
           tone: "success",
           text: "Direction sent to the active turn.",
@@ -4486,9 +4559,11 @@ function WorkspaceApp() {
         return;
       }
 
+      const directMessageId=clientUUID();
       const turnParams: Record<string, unknown> = {
         threadId: threadId ?? "00000000-0000-0000-0000-000000000000",
         disabledPluginIds,
+        clientUserMessageId:directMessageId,
         input,
       };
       if (model) turnParams.model = model;
@@ -4525,6 +4600,13 @@ function WorkspaceApp() {
         return;
       }
 
+      optimisticId=directMessageId;
+      beginOptimistic({
+        id:directMessageId,threadId:threadIdAtSend,
+        kind:"turn",status:"sending",input,
+        attachments:uploadsAtSend,selectedSkills:selectedSkillsAtSend,
+      },composerAtSend);
+
       if (!threadId) {
         const startParams: Record<string, unknown> = {};
         if (model) startParams.model = model;
@@ -4549,6 +4631,7 @@ function WorkspaceApp() {
           return;
         threadId = started.thread.id;
         turnParams.threadId = threadId;
+        changeOptimistic(directMessageId,{threadId});
         const startedRoute: ConversationRoute = {
           kind: "thread",
           threadId,
@@ -4590,6 +4673,7 @@ function WorkspaceApp() {
       const response = await client.request<{
         turn: { id: string; status: string };
       }>("turn/start", turnParams);
+      changeOptimistic(directMessageId,{status:"confirmed",turnId:response.turn.id});
       if (selectedRef.current === threadId) {
         if (response.turn.status === "inProgress")
           eligibleCompletionTurnIdsRef.current.add(response.turn.id);
@@ -4600,14 +4684,11 @@ function WorkspaceApp() {
           turnId: response.turn.id,
           active: response.turn.status === "inProgress",
         };
-        if ((composerRef.current?.value ?? composerAtSend) === composerAtSend) {
-          setComposer("");
-          if (composerRef.current) composerRef.current.style.height = "39px";
-        }
-        clearUploadsIfUnchanged(uploadsAtSend);
         setShowOptions(false);
       }
     } catch (error) {
+      if(optimisticId)
+        changeOptimistic(optimisticId,{status:"unconfirmed",error:shortError(error)});
       setNotice({
         tone: "error",
         text: shouldSteer
@@ -4700,12 +4781,18 @@ function WorkspaceApp() {
     queueingRef.current = true;
     setQueueing(true);
     setNotice(null);
+    beginOptimistic({
+      id:clientUserMessageId,threadId:threadIdAtQueue,
+      kind:"queue",status:"sending",input,
+      attachments:uploadsAtQueue,selectedSkills:selectedSkillsAtQueue,
+    },textAtQueue);
     try {
       const result = await client.request<{
         queuedSubmission: QueuedSubmission;
       }>("thread/queue/add", params);
       if (!result.queuedSubmission?.id)
         throw new Error("The daemon did not confirm the queued reply.");
+      setOptimisticMessages(current=>current.filter(item=>item.id!==clientUserMessageId));
       if (
         selectedRef.current === threadIdAtQueue &&
         loadVersionRef.current === loadVersionAtQueue
@@ -4721,32 +4808,13 @@ function WorkspaceApp() {
         );
         void refreshThreadQueue(client, threadIdAtQueue);
       }
-      let clearedDraft = false;
-      if (
-        selectedRef.current === threadIdAtQueue &&
-        loadVersionRef.current === loadVersionAtQueue
-      ) {
-        const composerUnchanged =
-          (composerRef.current?.value ?? textAtQueue) === textAtQueue;
-        const uploadIdsAtQueue = uploadsAtQueue
-          .map((upload) => upload.id)
-          .join("\u0000");
-        const uploadsUnchanged =
-          uploadsRef.current.map((upload) => upload.id).join("\u0000") ===
-          uploadIdsAtQueue;
-        if (composerUnchanged) {
-          setComposer("");
-          if (composerRef.current) composerRef.current.style.height = "39px";
-        }
-        clearUploadsIfUnchanged(uploadsAtQueue);
-        clearedDraft = composerUnchanged && uploadsUnchanged;
-      }
-      if (clearedDraft) queueAttemptRef.current = null;
+      queueAttemptRef.current = null;
       setNotice({
         tone: "success",
         text: `Reply queued for ${threadTitleAtQueue}. It will run after the active turn.`,
       });
     } catch (error) {
+      changeOptimistic(clientUserMessageId,{status:"unconfirmed",error:shortError(error)});
       setNotice({
         tone: "error",
         text: `Could not confirm that the reply was queued. Check the thread queue before retrying. ${shortError(error)}`,
@@ -5417,7 +5485,7 @@ function WorkspaceApp() {
     const view = timelineRef.current;
     if (!view) return;
     if (scrollWasNearBottom.current) view.scrollTop = view.scrollHeight;
-  }, [items]);
+  }, [items,visibleOptimistic.length]);
 
   if (booting) return <LoadingScreen label="Connecting your workspace" />;
   if (!status && statusError) {
@@ -6175,7 +6243,7 @@ function WorkspaceApp() {
               Restoring conversation…
             </div>
           ) : null}
-          {!selectedThread && items.length === 0 ? (
+          {!selectedThread && items.length === 0 && visibleOptimistic.length === 0 ? (
             <div className="welcome-state">
               <div className="welcome-mark">
                 <Code2 size={23} />
@@ -6262,6 +6330,9 @@ function WorkspaceApp() {
               />
             );
           })}
+          {visibleOptimistic.map(message=><OptimisticMessageBubble
+            key={message.id} message={message}
+            onRestore={()=>void restoreOptimistic(message)}/>)}
           {turnActive && !items.some((entry) => entry.streaming) ? (
             <div className="thinking-indicator">
               <span />
@@ -7752,6 +7823,33 @@ function activityLabel(item: ThreadItem): string {
   }
   if (item.type === "imageView") return "Viewed an image";
   return humanizeItemType(item.type);
+}
+
+function OptimisticMessageBubble({message,onRestore}:{
+  message:OptimisticSubmission;onRestore:()=>void;
+}){
+  const uncertain=message.status==="unconfirmed";
+  return <article className={`message-row user-row optimistic-message ${uncertain?"unconfirmed":""}`}
+    aria-label={uncertain?"Message delivery could not be confirmed":"Message submitted"}>
+    <div className="user-message-bubble">
+      {message.input.map((part,index)=>(
+        part.type==="text"?<div className="user-text" key={index}>{part.text}</div>:
+        part.type==="image" && "url" in part ?
+          <div className="optimistic-attachment" key={index}>
+            {safeImageUrl(part.url)?<img src={part.url} alt="Attached image"/>:"Image attachment"}
+          </div>:
+          part.type==="skill" ? <span className="user-chip" key={index}>Skill · {part.name}</span>:
+          part.type==="mention" ? <span className="user-chip" key={index}>@{part.name}</span>:null
+      ))}
+      <div className="optimistic-status" role="status">
+        {uncertain?"Delivery unconfirmed":message.status==="sending"
+          ? message.kind==="queue"?"Queuing…":"Sending…"
+          : "Submitted · syncing…"}
+        {uncertain?<button type="button" onClick={onRestore}>Check and restore draft</button>:null}
+      </div>
+      {uncertain&&message.error?<small className="optimistic-error">{message.error}</small>:null}
+    </div>
+  </article>;
 }
 
 function TimelineCard({

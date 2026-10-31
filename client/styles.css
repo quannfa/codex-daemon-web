@@ -4599,3 +4599,48 @@ html[data-keyboard-visible="true"] .composer-wrap {
   max-height:65vh;padding:12px;border:1px solid var(--border-soft);border-radius:7px;font-size:11px;}
 .file-reference-image{display:block;max-width:100%;max-height:70vh;object-fit:contain;align-self:center;}
 .file-reference-pdf{display:block;width:100%;height:65vh;border:1px solid var(--border);}
+
+/* Optimistic user messages appear immediately, then reconcile by client ID. */
+.optimistic-message .user-message-bubble {
+  border-style:dashed;
+  border-color:var(--border-strong);
+}
+.optimistic-message.unconfirmed .user-message-bubble {
+  border-style:solid;
+  border-color:var(--border-danger);
+  background:color-mix(in srgb,var(--button-danger) 14%,var(--surface-user));
+}
+.optimistic-status {
+  display:flex;
+  gap:9px;
+  align-items:center;
+  flex-wrap:wrap;
+  margin-top:6px;
+  color:var(--text-secondary);
+  font-size:10px;
+}
+.optimistic-message.unconfirmed .optimistic-status {
+  color:var(--text-danger);
+}
+.optimistic-status button {
+  border:1px solid var(--border-danger);
+  padding:3px 8px;
+  color:var(--text-danger);
+  background:var(--surface-raised);
+  border-radius:6px;
+  cursor:pointer;
+}
+.optimistic-error {
+  display:block;
+  color:var(--text-danger);
+  margin-top:4px;
+  overflow-wrap:anywhere;
+}
+.optimistic-attachment img {
+  display:block;
+  max-width:min(310px,100%);
+  max-height:240px;
+  object-fit:contain;
+  border-radius:7px;
+  margin-top:6px;
+}
