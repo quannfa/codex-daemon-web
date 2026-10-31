@@ -1865,6 +1865,19 @@ function WorkspaceApp() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
   const [codexProjects, setCodexProjects] = useState<CodexProject[]>([]);
+  // Official Codex project ID for a *new* conversation. Never inferred from cwd.
+  const [newProjectId,setNewProjectId] = useState("");
+  const selectNewProject=(projectId:string)=>{
+    setNewProjectId(projectId);
+    if(!projectId)return;
+    const project=codexProjects.find(entry=>entry.id===projectId);
+    const roots=project?.roots.map(entry=>entry.path).filter(Boolean)||[];
+    if(roots.length && !roots.some(root=>cwd===root||cwd.startsWith(root+"/")))
+      setCwd(roots[0]);
+  };
+  const projectOptionLabel=(project:CodexProject)=>
+    project.name+" · "+(project.roots[0]?.path||project.id);
+
   const [projectRenameId, setProjectRenameId] = useState<string|null>(null);
   const [projectRenameValue, setProjectRenameValue] = useState("");
   const [projectMoveThread, setProjectMoveThread] = useState<ThreadSummary|null>(null);
@@ -3774,6 +3787,7 @@ function WorkspaceApp() {
     sessionStorage.removeItem(selectedThreadKey);
     setSelectedThread(null);
     setThreadDetails(null);
+    setNewProjectId(selectedThread?.projectId || "");
     setDisabledPluginIds([]);
     setItems([]);
     itemsRef.current = [];
@@ -4471,6 +4485,7 @@ function WorkspaceApp() {
         const startParams: Record<string, unknown> = {};
         if (model) startParams.model = model;
         if (cwd.trim()) startParams.cwd = cwd.trim();
+        if (newProjectId) startParams.projectId = newProjectId;
         if (approvalPolicy) startParams.approvalPolicy = approvalPolicy;
         if (sandboxMode) startParams.sandbox = sandboxMode;
         const started = await client.request<{
@@ -5920,7 +5935,7 @@ function WorkspaceApp() {
               onChange={(event)=>setProjectMoveTarget(event.target.value)}>
               <option value="">No project (remove from project)</option>
               {codexProjects.map(project=>(
-                <option value={project.id} key={project.id}>{project.name}</option>
+                <option value={project.id} key={project.id}>{projectOptionLabel(project)}</option>
               ))}
             </select>
             <small>This updates the Codex project assignment, not the conversation's working directory.</small>
@@ -5974,6 +5989,12 @@ function WorkspaceApp() {
             <ChevronDown size={14} />
           </div>
           <div className="topbar-right">
+            {selectedThread ? <button type="button" className="project-topbar-move"
+              title="Move this conversation to a Codex project"
+              aria-label="Move conversation to project"
+              onClick={()=>{setProjectMoveThread(selectedThread);setProjectMoveTarget(selectedThread.projectId||"");}}>
+              <FolderInput size={15}/> <span>Project</span>
+            </button>:null}
             <a
               className="browser-shortcut"
               href="/browser"
@@ -6117,6 +6138,16 @@ function WorkspaceApp() {
                 Ask Codex to explore, build, or explain something in your
                 workspace.
               </p>
+              <label className="new-conversation-project">
+                <span>Project</span>
+                <select aria-label="New conversation project" value={newProjectId}
+                  onChange={event=>selectNewProject(event.target.value)}>
+                  <option value="">No project</option>
+                  {codexProjects.map(project=><option key={project.id} value={project.id}>
+                    {projectOptionLabel(project)}
+                  </option>)}
+                </select>
+              </label>
               <div className="suggestion-list">
                 <button
                   onClick={() =>
@@ -6740,6 +6771,16 @@ function WorkspaceApp() {
                         </label>
                         {!selectedThread ? (
                           <label className="cwd-setting">
+                            <span>Project</span>
+                            <select aria-label="New conversation project in options" value={newProjectId}
+                              onChange={event=>selectNewProject(event.target.value)}>
+                              <option value="">No project</option>
+                              {codexProjects.map(project=><option key={project.id} value={project.id}>
+                                {projectOptionLabel(project)}
+                              </option>)}
+                            </select>
+                            <small>Saved as the official Codex project ID when this conversation starts.</small>
+                            <span>Working directory</span>
                             <span>Working directory</span>
                             <input
                               value={cwd}

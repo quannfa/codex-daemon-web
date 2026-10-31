@@ -4551,3 +4551,12 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .login-language {display:flex;justify-content:flex-end;margin-bottom:7px;}
 .login-language select {min-height:30px;padding:0 9px;border-radius:6px;border:1px solid var(--border);
   background:var(--surface-raised);color:var(--ink);font-size:12px;}
+.new-conversation-project {display:flex;align-items:center;justify-content:center;gap:9px;
+  width:min(100%,490px);margin:14px auto 18px;font-size:12px;color:var(--muted);}
+.new-conversation-project select {min-width:0;max-width:calc(100% - 85px);min-height:36px;
+  padding:0 10px;border:1px solid var(--border-strong);border-radius:7px;
+  background:var(--surface-raised);color:var(--ink);font:inherit;}
+.project-topbar-move {display:flex;align-items:center;gap:6px;padding:6px 9px;
+  border:1px solid var(--border);border-radius:7px;background:var(--surface-raised);
+  color:var(--ink);font-size:11px;cursor:pointer;}
+@media(max-width:590px){.project-topbar-move span {display:none;}}
