@@ -13,10 +13,13 @@ async function check() {
   let updated = now-120, turnId = "old-turn", calls = 0, resumeAllowed = true;
   const parent = {id:"parent",status:{type:"idle"},updatedAt:now-180};
   const child = () => ({id:"child",updatedAt:updated,status:{type:"idle"},source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}}});
+  // Another sibling is still working; the finished child's result must
+  // nevertheless reach the idle parent without waiting for it.
+  const busySibling = {id:"busy-sibling",updatedAt:now-50,status:{type:"active"},source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}}};
   const historyless = {id:"historyless",updatedAt:now-400,status:{type:"notLoaded"},source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}}};
   const connect = async () => ({
     call: async (method: string, params: any) => {
-      if (method === "thread/list") return {data:params.sourceKinds.includes("subAgent")?[child(),historyless]:[parent],nextCursor:null};
+      if (method === "thread/list") return {data:params.sourceKinds.includes("subAgent")?[child(),historyless,busySibling]:[parent],nextCursor:null};
       if (method === "thread/turns/list" && params.threadId === "historyless") return {data:[]};
       if (method === "thread/turns/list") return {data:[{id:turnId,status:"completed",items:params.itemsView === "full" ? [{type:"agentMessage",text:"Completed research."}] : []}]};
       if (method === "thread/resume") {if (!resumeAllowed) throw Error("active writer"); return {thread:{status:{type:"idle"}}};}
@@ -43,7 +46,7 @@ async function check() {
     (loop as any).retryAt.clear(); // advance past the intentional lock-backoff in this synthetic test
     await (loop as any).tick();
     await sleep(100);
-    assert(calls===1 && loop.status().delivered===1,"completed child not delivered exactly once");
+    assert(calls===1 && loop.status().delivered===1,"active sibling must not block completed child relay");
     await (loop as any).tick();
     await sleep(50);
     assert(calls===1,"duplicate delivery");
@@ -66,7 +69,7 @@ async function check() {
     assert(loop.status().delivered===2,"WebUI writer relay not marked delivered");
     const saved=JSON.parse(await readFile(path,"utf8"));
     assert(saved.initialized && Object.values(saved.jobs).length===2,"persistent checkpoint invalid");
-    console.log("SUBAGENT_RETURN_TESTS_PASS baseline/empty-history/queue/deliver/dedupe/persist/webui-owner-reuse");
+    console.log("SUBAGENT_RETURN_TESTS_PASS baseline/empty-history/queue/active-sibling-does-not-block/deliver/dedupe/persist/webui-owner-reuse");
   } finally { loop.stop(); await rm(dir,{recursive:true,force:true}); }
 }
 await check();

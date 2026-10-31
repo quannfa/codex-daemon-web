@@ -140,7 +140,8 @@ export class SubagentReturnLoop {
         if (this.pausedParents.has(parentId)) continue;
         const parent = rootsById.get(parentId);
         if (!parent || parent.status?.type === "active") continue;
-        if (agents.some(a => parentOf(a) === parentId && a.status?.type === "active")) continue;
+        // An active sibling must not block results from a finished child.
+        // Only the parent's own busy state / active writer gates delivery.
         this.pausedParents.add(parentId);
         void this.deliverBatch(jobs).catch(error => {
           process.stderr.write(`[subagent-relay] delivery failed unexpectedly: ${failure(error)}\n`);
