@@ -51,7 +51,7 @@ export class SubagentReturnLoop {
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
   status() {
     const jobs = Object.values(this.state.jobs);
-    return { enabled: !this.stopped, initialized: this.state.initialized, pending: jobs.filter(x=>x.state === "pending").length, delivered: jobs.filter(x=>x.state === "delivered").length, uncertain: jobs.filter(x=>x.state === "uncertain").length };
+    return { enabled: !this.stopped, initialized: this.state.initialized, pending: jobs.filter(x=>x.state === "pending").length, inFlight: jobs.filter(x=>x.state === "sending").length, delivered: jobs.filter(x=>x.state === "delivered").length, uncertain: jobs.filter(x=>x.state === "uncertain").length };
   }
   private async save() {
     const snapshot = JSON.stringify(this.state);
@@ -102,6 +102,13 @@ export class SubagentReturnLoop {
         const childId = asStr(agent.id), parentId = parentOf(agent);
         if (!childId || !parentId || agent.status?.type === "active") continue;
         const updatedAt = Number(agent.updatedAt) || 0;
+        if (!this.state.initialized) {
+          // Seed every historical child, including sessions with no accessible
+          // final turn or active pagination support. Never relay old work.
+          this.state.seen[childId] = {turnId:"",updatedAt};
+          changed = true;
+          continue;
+        }
         const seen = this.state.seen[childId];
         if (seen && seen.updatedAt === updatedAt) continue;
         // Allow daemon time to persist the final turn and its assistant message.

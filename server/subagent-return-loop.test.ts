@@ -13,9 +13,11 @@ async function check() {
   let updated = now-120, turnId = "old-turn", calls = 0, resumeAllowed = true;
   const parent = {id:"parent",status:{type:"idle"},updatedAt:now-180};
   const child = () => ({id:"child",updatedAt:updated,status:{type:"idle"},source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}}});
+  const historyless = {id:"historyless",updatedAt:now-400,status:{type:"notLoaded"},source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}}};
   const connect = async () => ({
     call: async (method: string, params: any) => {
-      if (method === "thread/list") return {data:params.sourceKinds.includes("subAgent")?[child()]:[parent],nextCursor:null};
+      if (method === "thread/list") return {data:params.sourceKinds.includes("subAgent")?[child(),historyless]:[parent],nextCursor:null};
+      if (method === "thread/turns/list" && params.threadId === "historyless") return {data:[]};
       if (method === "thread/turns/list") return {data:[{id:turnId,status:"completed",items:params.itemsView === "full" ? [{type:"agentMessage",text:"Completed research."}] : []}]};
       if (method === "thread/resume") {if (!resumeAllowed) throw Error("active writer"); return {thread:{status:{type:"idle"}}};}
       if (method === "turn/start") {calls++; assert(params.input?.[0]?.text.includes("Completed research."),"child result missing"); return {turn:{id:"new-parent-turn",status:"completed"}};}
@@ -29,6 +31,8 @@ async function check() {
     await loop.start();
     await sleep(100);
     assert(loop.status().initialized,"initial baseline missing");
+    const checkpoint=JSON.parse(await readFile(path,"utf8"));
+    assert(Object.keys(checkpoint.seen).length === 2,"historical child without turn was not baselined");
     assert(calls===0,"historical child wrongly replayed");
     resumeAllowed=false;
     updated += 30; turnId="new-turn";
@@ -62,7 +66,7 @@ async function check() {
     assert(loop.status().delivered===2,"WebUI writer relay not marked delivered");
     const saved=JSON.parse(await readFile(path,"utf8"));
     assert(saved.initialized && Object.values(saved.jobs).length===2,"persistent checkpoint invalid");
-    console.log("SUBAGENT_RETURN_TESTS_PASS baseline/queue/deliver/dedupe/persist/webui-owner-reuse");
+    console.log("SUBAGENT_RETURN_TESTS_PASS baseline/empty-history/queue/deliver/dedupe/persist/webui-owner-reuse");
   } finally { loop.stop(); await rm(dir,{recursive:true,force:true}); }
 }
 await check();
