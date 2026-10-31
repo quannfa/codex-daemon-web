@@ -49,6 +49,7 @@ import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
 import ThreadGoalPanel from "./ThreadGoalPanel";
 import FileReferenceViewer from "./FileReferenceViewer";
+import {clientUUID} from "./client-uuid";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
@@ -4446,7 +4447,7 @@ function WorkspaceApp() {
         const clientUserMessageId =
           steerAttemptRef.current?.key === attemptKey
             ? steerAttemptRef.current.clientUserMessageId
-            : crypto.randomUUID();
+            : clientUUID();
         steerAttemptRef.current = { key: attemptKey, clientUserMessageId };
         const steerParams = {
           threadId: threadIdAtSend!,
@@ -4684,7 +4685,7 @@ function WorkspaceApp() {
     const clientUserMessageId =
       queueAttemptRef.current?.key === attemptKey
         ? queueAttemptRef.current.clientUserMessageId
-        : crypto.randomUUID();
+        : clientUUID();
     queueAttemptRef.current = { key: attemptKey, clientUserMessageId };
     const params = { threadId: threadIdAtQueue, input, clientUserMessageId };
     const requestBytes = serializedRequestBytes("thread/queue/add", params);
@@ -5329,7 +5330,7 @@ function WorkspaceApp() {
       const converted: PendingUpload[] = [];
       for (const file of accepted) {
         converted.push({
-          id: crypto.randomUUID(),
+          id: clientUUID(),
           name: file.name || "Pasted image",
           dataUrl: await compressImage(file),
           size: file.size,
