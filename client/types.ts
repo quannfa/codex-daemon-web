@@ -85,6 +85,9 @@ export type ThreadSummary = {
   status: ThreadStatus;
   canAcceptDirectInput: boolean | null;
   archived?: boolean;
+  parentThreadId?: string | null;
+  agentNickname?: string | null;
+  source?: string | { subAgent?: { thread_spawn?: { parent_thread_id?: string; agent_nickname?: string | null } } };
 };
 
 export type ModelOption = {

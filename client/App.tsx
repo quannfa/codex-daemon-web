@@ -59,7 +59,7 @@ import type {
   McpServerElicitationResponse,
   UserInput,
 } from "./types";
-import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
+import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
 import "./styles.css";
 
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
@@ -1855,6 +1855,16 @@ function WorkspaceApp() {
   const [notice, setNotice] = useState<AppNotice | null>(null);
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
+  const [collapsedSubagents, setCollapsedSubagents] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("codex-web.subagent-tree.v1") || "{}"); }
+    catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("codex-web.subagent-tree.v1", JSON.stringify(collapsedSubagents)); }
+    catch { /* Local storage may be unavailable. */ }
+  }, [collapsedSubagents]);
+
   const threadsRef = useRef<ThreadSummary[]>([]);
   const [archivedThreads, setArchivedThreads] = useState(false);
   const [threadCursor, setThreadCursor] = useState<string | null>(null);
@@ -2569,7 +2579,8 @@ function WorkspaceApp() {
           data: ThreadSummary[];
           nextCursor: string | null;
         }>("thread/list", {
-          limit: 40,
+          limit: 100,
+          sourceKinds: ["cli", "vscode", "appServer"],
           sortKey: archived ? "updated_at" : "recency_at",
           sortDirection: "desc",
           archived,
@@ -2585,6 +2596,29 @@ function WorkspaceApp() {
           mergeThreadPage(current, data, append, !archived),
         );
         setThreadCursor(result.nextCursor);
+        // The daemon excludes spawned agents from default thread/list results.
+        // Fetch agent sources independently so normal conversation pagination is unchanged.
+        try {
+          const agents: ThreadSummary[] = [];
+          let cursor: string | null = null;
+          for (let page = 0; page < 20; page++) {
+            const batch: { data: ThreadSummary[]; nextCursor: string | null } = await rpc.request("thread/list", {
+              limit: 100,
+              archived,
+              sortKey: archived ? "updated_at" : "recency_at",
+              sortDirection: "desc",
+              sourceKinds: subagentSourceKinds,
+              ...(cursor ? { cursor } : {}),
+            });
+            agents.push(...batch.data);
+            cursor = batch.nextCursor;
+            if (!cursor) break;
+          }
+          setSubagentThreads(agents);
+        } catch (error) {
+          console.warn("Unable to load subagent threads", error);
+        }
+
       } catch (error) {
         setNotice({
           tone: "error",
@@ -3791,12 +3825,14 @@ function WorkspaceApp() {
   const filteredThreads = useMemo(() => {
     const query = threadSearch.toLowerCase().trim();
     if (!query) return threads;
+    const agentAncestors = agentAncestorIds(subagentThreads, query);
     return threads.filter((thread) =>
+      agentAncestors.has(thread.id) ||
       `${titleFor(thread)} ${thread.preview} ${thread.cwd}`
         .toLowerCase()
         .includes(query),
     );
-  }, [threadSearch, threads]);
+  }, [threadSearch, threads, subagentThreads]);
   const projectGroups = useMemo(
     () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar),
     [filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar],
@@ -5442,7 +5478,7 @@ function WorkspaceApp() {
                     <span className="project-thread-count" aria-label={`${group.threads.length} loaded conversations`}>{group.threads.length}</span>
                   </button>
                   {expanded ? <div className="project-conversations">
-                    {group.threads.map((thread) => {
+                    {buildAgentTreeRows(group.threads, subagentThreads, collapsedSubagents, archivedThreads, threadSearch.toLowerCase().trim()).map(({thread, depth, childCount, expanded: agentExpanded}) => {
                       const activityTimestamp = threadActivityTimestamp(
                         thread,
                         archivedThreads,
@@ -5451,8 +5487,22 @@ function WorkspaceApp() {
                       return (
                         <div
                           key={thread.id}
-                          className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""}`}
+                          className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""} ${depth ? "thread-agent-row" : ""}`}
+                          style={{ paddingLeft: Math.min(depth, 8) * 13 }}
                         >
+                          {childCount ? (
+                            <button
+                              type="button"
+                              className="thread-tree-toggle"
+                              aria-expanded={agentExpanded}
+                              aria-label={`${agentExpanded ? "Collapse" : "Expand"} ${childCount} subagents`}
+                              title={`${childCount} subagents`}
+                              onClick={() => setCollapsedSubagents((current) => ({ ...current, [thread.id]: !current[thread.id] }))}
+                            >
+                              {agentExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                            </button>
+                          ) : <span className="thread-tree-spacer" aria-hidden="true" />}
+
                           {renameId === thread.id ? (
                             <form
                               className="rename-form"
@@ -5518,7 +5568,7 @@ function WorkspaceApp() {
                               >
                                 <span className="thread-copy">
                                   <span className="thread-name">
-                                    {titleFor(thread)}
+                                    {depth > 0 ? `Agent · ${agentDisplayName(thread) || titleFor(thread)}` : titleFor(thread)}
                                   </span>
                                   <span className="thread-subtitle">
                                     {activityTime ? (

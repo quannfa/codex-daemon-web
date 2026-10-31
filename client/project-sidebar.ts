@@ -65,3 +65,82 @@ export function groupProjectThreads(threads: ThreadSummary[], sort: ProjectSort,
   return [...groups.values()].sort((a, b) =>
     (sort === "recent" ? b.activity - a.activity : 0) || byName(a, b));
 }
+
+// Subagent threads are excluded from the default thread/list sources. Their
+// parent relationship is stored in source.subAgent.thread_spawn on this daemon.
+export const subagentSourceKinds = [
+  "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther",
+];
+
+export function agentParentId(thread: ThreadSummary): string | null {
+  if (thread.parentThreadId) return thread.parentThreadId;
+  const source = thread.source;
+  if (typeof source === "object" && source?.subAgent?.thread_spawn?.parent_thread_id)
+    return source.subAgent.thread_spawn.parent_thread_id;
+  return null;
+}
+
+export function agentDisplayName(thread: ThreadSummary): string | null {
+  if (thread.agentNickname) return thread.agentNickname;
+  const source = thread.source;
+  return typeof source === "object" ? source?.subAgent?.thread_spawn?.agent_nickname || null : null;
+}
+
+export type ThreadTreeRow = {
+  thread: ThreadSummary;
+  depth: number;
+  childCount: number;
+  expanded: boolean;
+};
+
+export function agentAncestorIds(agents: ThreadSummary[], query: string): Set<string> {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const ancestors = new Set<string>();
+  for (const agent of agents) {
+    if (!`${agent.name || ""} ${agent.preview} ${agent.cwd} ${agentDisplayName(agent) || ""}`.toLowerCase().includes(query)) continue;
+    let parent = agentParentId(agent);
+    const seen = new Set([agent.id]);
+    while (parent && !seen.has(parent)) {
+      ancestors.add(parent);
+      seen.add(parent);
+      parent = byId.has(parent) ? agentParentId(byId.get(parent)!) : null;
+    }
+  }
+  return ancestors;
+}
+
+export function buildAgentTreeRows(
+  roots: ThreadSummary[], agents: ThreadSummary[], collapsed: Record<string, boolean>,
+  archived: boolean, query = "",
+): ThreadTreeRow[] {
+  const byParent = new Map<string, ThreadSummary[]>();
+  const rootIds = new Set(roots.map((thread) => thread.id));
+  const agentIds = new Set(agents.map((agent) => agent.id));
+  for (const agent of agents) {
+    const parent = agentParentId(agent);
+    if (!parent || parent === agent.id || (!rootIds.has(parent) && !agentIds.has(parent))) continue;
+    const children = byParent.get(parent) || [];
+    children.push(agent);
+    byParent.set(parent, children);
+  }
+  for (const children of byParent.values()) {
+    children.sort((a,b) => activity(b,archived)-activity(a,archived) || a.id.localeCompare(b.id));
+  }
+  const matches = (thread: ThreadSummary) =>
+    `${thread.name || ""} ${thread.preview} ${thread.cwd} ${agentDisplayName(thread) || ""}`.toLowerCase().includes(query);
+  const ancestors = query ? agentAncestorIds(agents, query) : new Set<string>();
+  const rows: ThreadTreeRow[] = [];
+  const visit = (thread: ThreadSummary, depth: number, inheritedMatch: boolean, path: Set<string>) => {
+    if (path.has(thread.id)) return;
+    const ownMatch = Boolean(query && matches(thread));
+    if (query && !inheritedMatch && !ownMatch && !ancestors.has(thread.id)) return;
+    const children = byParent.get(thread.id) || [];
+    const expanded = Boolean(query) || !collapsed[thread.id];
+    rows.push({thread, depth, childCount:children.length, expanded});
+    if (!expanded) return;
+    const nextPath = new Set(path); nextPath.add(thread.id);
+    for (const child of children) visit(child, depth+1, inheritedMatch || ownMatch, nextPath);
+  };
+  for (const root of roots) visit(root,0,false,new Set());
+  return rows;
+}

@@ -4404,3 +4404,18 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .project-path { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .project-thread-count { color: var(--muted); font-size: 10px; }
 .project-conversations { padding-left: 10px; }
+
+/* Agent conversation hierarchy inside each project */
+.thread-agent-row { border-left: 1px solid var(--border-soft); border-radius: 0 8px 8px 0; }
+.thread-agent-row .thread-name { font-weight: 550; }
+.thread-tree-toggle, .thread-tree-spacer {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 22px; width: 22px; height: 30px;
+}
+.thread-tree-toggle {
+  padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.thread-tree-toggle:hover { background: var(--surface-raised); color: var(--ink); }
+.thread-tree-toggle:focus-visible { outline: 2px solid var(--focus-ring); }
+.thread-row .thread-select { padding-left: 2px; }
