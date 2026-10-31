@@ -9,6 +9,7 @@ import {
   Command,
   FilePlus2,
   FileText,
+  FolderInput,
   Globe,
   ImagePlus,
   LoaderCircle,
@@ -46,6 +47,7 @@ import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import ThreadPluginOptions from "./ThreadPluginOptions";
+import SidebarQuota from "./SidebarQuota";
 import type {
   ApprovalPrompt,
   DaemonStatus,
@@ -62,7 +64,7 @@ import type {
   McpServerElicitationResponse,
   UserInput,
 } from "./types";
-import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
+import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
 import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./thread-status";
 import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
 import "./styles.css";
@@ -1861,6 +1863,13 @@ function WorkspaceApp() {
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
+  const [codexProjects, setCodexProjects] = useState<CodexProject[]>([]);
+  const [projectRenameId, setProjectRenameId] = useState<string|null>(null);
+  const [projectRenameValue, setProjectRenameValue] = useState("");
+  const [projectMoveThread, setProjectMoveThread] = useState<ThreadSummary|null>(null);
+  const [projectMoveTarget, setProjectMoveTarget] = useState("");
+  const [projectMutationBusy, setProjectMutationBusy] = useState(false);
+
   const [scheduledTasksForIndicators, setScheduledTasksForIndicators] = useState<ScheduledTask[]>([]);
   const [failedThreadIds, setFailedThreadIds] = useState<Set<string>>(() => new Set());
   const [threadStatusPreferences, setThreadStatusPreferences] = useState(() => {
@@ -1887,7 +1896,7 @@ function WorkspaceApp() {
   const [threadSearch, setThreadSearch] = useState("");
   const [projectPreferences, setProjectPreferences] = useState<ProjectPreferences>(() => {
     try { return readProjectPreferences(localStorage); }
-    catch { return { collapsed: {}, sort: "recent" }; }
+    catch { return { collapsed: {}, sort: "recent", view: "projects" }; }
   });
   useEffect(() => {
     try { localStorage.setItem(projectPreferencesKey, JSON.stringify(projectPreferences)); }
@@ -2646,6 +2655,58 @@ function WorkspaceApp() {
     },
     [archivedThreads, threadCursor],
   );
+
+  const refreshProjects = useCallback(async (rpc: RpcClient) => {
+    try {
+      const projects: CodexProject[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const result: {data: CodexProject[];nextCursor:string|null} = await rpc.request("project/list",{
+          limit:100,...(cursor?{cursor}:{}),
+        });
+        projects.push(...result.data);
+        cursor=result.nextCursor;
+        if (!cursor) break;
+      }
+      setCodexProjects(projects);
+    } catch (error) {
+      setNotice({tone:"error",text:"Could not load Codex projects: "+shortError(error)});
+    }
+  },[]);
+  useEffect(() => {
+    if (!client || connection !== "online") return;
+    void refreshProjects(client);
+  }, [client,connection,refreshProjects]);
+
+  const renameCodexProject = async (projectId:string) => {
+    const name=projectRenameValue.trim();
+    if(!client||!name||projectMutationBusy)return;
+    setProjectMutationBusy(true);
+    try {
+      await client.request("project/update",{projectId,name});
+      setCodexProjects(old=>old.map(p=>p.id===projectId?{...p,name}:p));
+      setProjectRenameId(null);
+      void refreshProjects(client);
+    } catch(error) {setNotice({tone:"error",text:"Could not rename project: "+shortError(error)});}
+    finally {setProjectMutationBusy(false);}
+  };
+  const moveConversationToProject = async () => {
+    if (!client || !projectMoveThread || projectMutationBusy) return;
+    const threadId=projectMoveThread.id;
+    const projectId=projectMoveTarget;
+    setProjectMutationBusy(true);
+    try {
+      await client.request("thread/metadata/update",{threadId,projectId});
+      const patch=(t:ThreadSummary)=>t.id===threadId?{...t,projectId:projectId||null}:t;
+      setThreads(current=>current.map(patch));
+      threadsRef.current=threadsRef.current.map(patch);
+      setSubagentThreads(current=>current.map(patch));
+      setSelectedThread(current=>current?.id===threadId?patch(current):current);
+      setProjectMoveThread(null);
+      if (client) {void refreshProjects(client);void refreshThreads(client,archivedThreads,false);}
+    } catch(error){setNotice({tone:"error",text:"Could not change project: "+shortError(error)});}
+    finally{setProjectMutationBusy(false);}
+  };
 
   // Other daemon clients (notably Codex Desktop) may own the active thread.
   // Poll its persisted status so sidebar indicators don't depend on this
@@ -3888,13 +3949,20 @@ function WorkspaceApp() {
         .includes(query),
     );
   }, [threadSearch, threads, subagentThreads]);
-  const projectGroups = useMemo(
-    () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar),
-    [filteredThreads, projectPreferences.sort, archivedThreads, status?.sidebar],
-  );
   const scheduledIndicatorIds = useMemo(() => scheduledThreadIds(scheduledTasksForIndicators), [scheduledTasksForIndicators]);
   const activeChildParentIds = useMemo(() => activeSubagentParents(subagentThreads), [subagentThreads]);
   const pendingDecisionIds = useMemo(() => new Set(approvalQueue.map((prompt) => asString(prompt.params.threadId)).filter(Boolean)), [approvalQueue]);
+  const statusForThread = useCallback((thread: ThreadSummary) => threadIndicator(thread, {
+    pendingDecision: pendingDecisionIds.has(thread.id),
+    activeChild: activeChildParentIds.has(thread.id),
+    scheduled: scheduledIndicatorIds.has(thread.id),
+    failedTurn: failedThreadIds.has(thread.id),
+  }).kind, [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds]);
+  const projectGroups: SidebarThreadGroup[] = useMemo(
+    () => groupSidebarThreads(filteredThreads,codexProjects,projectPreferences.sort,archivedThreads,
+      status?.sidebar,projectPreferences.view,statusForThread),
+    [filteredThreads,codexProjects,projectPreferences.sort,projectPreferences.view,archivedThreads,status?.sidebar,statusForThread],
+  );
 
   useEffect(() => {
     if (sidebarSearchOpen && sidebarSection === "chats")
@@ -5496,7 +5564,18 @@ function WorkspaceApp() {
             </div>
           ) : null}
           <label className="project-sort">
-            <span>Projects</span>
+            <span>View</span>
+            <select aria-label="Conversation list view"
+              value={projectPreferences.view}
+              onChange={(event)=>setProjectPreferences(current=>({
+                ...current, view: event.target.value==="status"?"status":"projects",
+              }))}>
+              <option value="projects">Projects</option>
+              <option value="status">Work status</option>
+            </select>
+          </label>
+          {projectPreferences.view === "projects" ? <label className="project-sort">
+            <span>Sort</span>
             <select
               aria-label="Sort projects"
               value={projectPreferences.sort}
@@ -5507,7 +5586,7 @@ function WorkspaceApp() {
               <option value="recent">Recent activity</option>
               <option value="name">Project name</option>
             </select>
-          </label>
+          </label> : null}
           <div className="thread-status-legend" aria-label="Conversation status legend">
             {threadStatusOrder.filter((kind) => threadStatusPreferences[kind].enabled).map((kind) => (
               <span key={kind}>
@@ -5531,23 +5610,41 @@ function WorkspaceApp() {
               const expanded = Boolean(threadSearch.trim()) || !projectPreferences.collapsed[group.cwd];
               return (
                 <section className="project-group" key={group.cwd} aria-label={group.cwd || "No project"}>
-                  <button
-                    type="button"
-                    className="project-heading"
-                    aria-expanded={expanded}
-                    title={group.cwd || "Conversations without a project"}
-                    onClick={() => setProjectPreferences((current) => ({
-                      ...current,
-                      collapsed: { ...current.collapsed, [group.cwd]: !current.collapsed[group.cwd] },
-                    }))}
-                  >
-                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-                    <span className="project-heading-copy">
-                      <strong>{group.name}</strong>
-                      <span className="project-path">{group.cwd || "No working directory"}</span>
-                    </span>
-                    <span className="project-thread-count" aria-label={`${group.threads.length} loaded conversations`}>{group.threads.length}</span>
-                  </button>
+                  <div className="project-heading">
+                    {projectRenameId && group.projectId === projectRenameId ? (
+                      <form className="project-rename-form"
+                        onSubmit={(event)=>{event.preventDefault();void renameCodexProject(projectRenameId);}}>
+                        <input autoFocus aria-label="New project name" value={projectRenameValue}
+                          disabled={projectMutationBusy}
+                          onChange={(event)=>setProjectRenameValue(event.target.value)}
+                          onKeyDown={(event)=>{if(event.key==="Escape")setProjectRenameId(null);}} />
+                        <button type="submit" disabled={projectMutationBusy||!projectRenameValue.trim()}
+                          aria-label="Save project name"><Check size={14}/></button>
+                        <button type="button" aria-label="Cancel rename" onClick={()=>setProjectRenameId(null)}><X size={14}/></button>
+                      </form>
+                    ) : (
+                      <>
+                        <button type="button" className="project-heading-toggle"
+                          aria-expanded={expanded}
+                          title={group.path}
+                          onClick={()=>setProjectPreferences(current=>({
+                            ...current,collapsed:{...current.collapsed,[group.cwd]:!current.collapsed[group.cwd]},
+                          }))}>
+                          {expanded ? <ChevronDown size={14} aria-hidden="true"/> : <ChevronRight size={14} aria-hidden="true"/>}
+                          <span className="project-heading-copy">
+                            <strong>{group.name}</strong>
+                            <span className="project-path">{group.path}</span>
+                          </span>
+                          <span className="project-thread-count" aria-label={`${group.threads.length} loaded conversations`}>{group.threads.length}</span>
+                        </button>
+                        {group.projectId ? <button type="button" className="project-heading-edit"
+                          title={`Rename project ${group.name}`} aria-label={`Rename project ${group.name}`}
+                          onClick={()=>{setProjectRenameId(group.projectId);setProjectRenameValue(group.name);}}>
+                          <Pencil size={13}/>
+                        </button> : null}
+                      </>
+                    )}
+                  </div>
                   {expanded ? <div className="project-conversations">
                     {buildAgentTreeRows(group.threads, subagentThreads, collapsedSubagents, archivedThreads, threadSearch.toLowerCase().trim()).map(({thread, depth, childCount, expanded: agentExpanded}) => {
                       const activityTimestamp = threadActivityTimestamp(
@@ -5725,8 +5822,11 @@ function WorkspaceApp() {
               role="status"
               aria-live="polite"
             >
-              <span className="status-dot" />
-              <span>{statusLabel(currentConnection)}</span>
+              <div className="daemon-state-main">
+                <span className="status-dot" />
+                <span>{statusLabel(currentConnection)}</span>
+              </div>
+              <SidebarQuota rpc={client} online={connection==="online"} />
             </div>
             <button
               type="button"
@@ -5774,6 +5874,16 @@ function WorkspaceApp() {
                 <Pencil size={14} aria-hidden="true" />
                 <span>Rename</span>
               </button>
+              <button type="button" role="menuitem"
+                onClick={()=>{
+                  const {thread}=threadContextMenu;
+                  setThreadContextMenu(null);
+                  setProjectMoveThread(thread);
+                  setProjectMoveTarget(thread.projectId || "");
+                }}>
+                <FolderInput size={14} aria-hidden="true"/>
+                <span>Move to project…</span>
+              </button>
               <button
                 type="button"
                 role="menuitem"
@@ -5790,6 +5900,34 @@ function WorkspaceApp() {
             document.body,
           )
         : null}
+
+      {projectMoveThread ? createPortal(
+        <div className="modal-scrim settings-scrim" onClick={()=>!projectMutationBusy&&setProjectMoveThread(null)}>
+          <form className="project-move-panel" role="dialog" aria-modal="true"
+            aria-labelledby="project-move-title"
+            onClick={(event)=>event.stopPropagation()}
+            onSubmit={(event)=>{event.preventDefault();void moveConversationToProject();}}
+            onKeyDown={(event)=>{if(event.key==="Escape"&&!projectMutationBusy)setProjectMoveThread(null);}}>
+            <h3 id="project-move-title">Move conversation</h3>
+            <p title={titleFor(projectMoveThread)}>{titleFor(projectMoveThread)}</p>
+            <label htmlFor="project-move-target">Destination project</label>
+            <select id="project-move-target" value={projectMoveTarget} disabled={projectMutationBusy}
+              onChange={(event)=>setProjectMoveTarget(event.target.value)}>
+              <option value="">No project (remove from project)</option>
+              {codexProjects.map(project=>(
+                <option value={project.id} key={project.id}>{project.name}</option>
+              ))}
+            </select>
+            <small>This updates the Codex project assignment, not the conversation's working directory.</small>
+            <div className="project-move-actions">
+              <button type="button" disabled={projectMutationBusy} onClick={()=>setProjectMoveThread(null)}>Cancel</button>
+              <button type="submit" disabled={projectMutationBusy||projectMoveTarget===(projectMoveThread.projectId||"")}>
+                {projectMutationBusy?"Saving…":"Move"}
+              </button>
+            </div>
+          </form>
+        </div>,document.body
+      ):null}
 
       <main className="main-panel">
         <header className="topbar">

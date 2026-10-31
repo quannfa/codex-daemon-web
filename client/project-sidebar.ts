@@ -4,6 +4,7 @@ export type ProjectSort = "recent" | "name";
 export type ProjectPreferences = {
   collapsed: Record<string, boolean>;
   sort: ProjectSort;
+  view: SidebarView;
 };
 export const projectPreferencesKey = "codex-web.project-sidebar.v1";
 
@@ -16,9 +17,9 @@ export function readProjectPreferences(storage: Pick<Storage, "getItem">): Proje
         if (typeof state === "boolean") collapsed[key] = state;
       }
     }
-    return { collapsed, sort: value?.sort === "name" ? "name" : "recent" };
+    return { collapsed, sort: value?.sort === "name" ? "name" : "recent", view: value?.view === "status" ? "status" : "projects" };
   } catch {
-    return { collapsed: {}, sort: "recent" };
+    return { collapsed: {}, sort: "recent", view: "projects" };
   }
 }
 
@@ -143,4 +144,73 @@ export function buildAgentTreeRows(
   };
   for (const root of roots) visit(root,0,false,new Set());
   return rows;
+}
+
+/** Canonical project memberships, with legacy cwd folders clearly labeled as workspaces. */
+export type CodexProject = {
+  id: string;
+  name: string;
+  roots: Array<{path:string}>;
+  recencyAt: number | null;
+};
+export type SidebarView = "projects" | "status";
+export type SidebarThreadGroup = {
+  cwd: string; name: string; path: string; projectId: string | null;
+  kind: "project" | "workspace" | "unassigned" | "status";
+  threads: ThreadSummary[]; activity: number;
+};
+export const statusGroupOrder = ["error", "decision", "working", "waiting", "idle"] as const;
+export const statusGroupLabels: Record<string,string> = {
+  error: "Error", decision: "Needs decision", working: "Working",
+  waiting: "Waiting / Scheduled", idle: "Idle",
+};
+export function groupSidebarThreads(
+  threads: ThreadSummary[],
+  projects: CodexProject[],
+  sort: ProjectSort,
+  archived: boolean,
+  membership: SidebarMembership | undefined,
+  view: SidebarView,
+  getStatus: (thread: ThreadSummary) => string,
+): SidebarThreadGroup[] {
+  const groups = new Map<string, SidebarThreadGroup>();
+  if (view === "status") {
+    for (const kind of statusGroupOrder) {
+      groups.set("status:"+kind,{
+        cwd:"status:"+kind,name:statusGroupLabels[kind],path:"Parent conversations and their child agents",
+        projectId:null,kind:"status",threads:[],activity:0,
+      });
+    }
+  } else {
+    for (const project of projects) {
+      groups.set("project:"+project.id,{
+        cwd:"project:"+project.id,name:project.name,path:project.roots.map(x=>x.path).join(" · ") || "No root",
+        projectId:project.id,kind:"project",threads:[],activity:0,
+      });
+    }
+  }
+  for (const thread of threads) {
+    let key:string;
+    if (view === "status") key="status:"+getStatus(thread);
+    else if (thread.projectId && groups.has("project:"+thread.projectId)) key="project:"+thread.projectId;
+    else {
+      const cwd=projectCwdFor(thread,membership);
+      key=cwd?"workspace:"+cwd:"unassigned";
+      if (!groups.has(key)) groups.set(key,{
+        cwd:key,name:cwd?"Workspace · "+(cwd.split(/[\\/]/).filter(Boolean).at(-1)||cwd):"No project",
+        path:cwd?"Unassigned · "+cwd:"Conversations without a project",
+        projectId:null,kind:cwd?"workspace":"unassigned",threads:[],activity:0,
+      });
+    }
+    const group=groups.get(key);
+    if (!group) continue;
+    group.threads.push(thread);
+    group.activity=Math.max(group.activity,activity(thread,archived));
+  }
+  for (const group of groups.values())
+    group.threads.sort((a,b)=>activity(b,archived)-activity(a,archived)||a.id.localeCompare(b.id));
+  if (view === "status") return [...groups.values()].filter(g=>g.threads.length>0);
+  return [...groups.values()].sort((a,b)=>
+    (sort==="recent"?b.activity-a.activity:0) ||
+    a.name.localeCompare(b.name) || a.cwd.localeCompare(b.cwd));
 }

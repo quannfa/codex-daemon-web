@@ -4474,3 +4474,71 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .codex-extension-success { color:#29a567; } .codex-extension-error { color:var(--text-danger); }
 
 .codex-thread-plugins {display:flex; flex-direction:column; gap:8px; padding:13px 0; border-top:1px solid var(--border-soft);}
+
+/* Canonical Codex project actions and switchable conversation grouping. */
+.project-heading { padding:0; cursor:default; }
+.project-heading:hover { background:transparent; }
+.project-heading-toggle {
+  display:flex; align-items:center; gap:6px; min-width:0; flex:1;
+  padding:8px 6px; border:0; border-radius:6px;
+  color:var(--ink); background:transparent; text-align:left; cursor:pointer;
+}
+.project-heading-toggle:hover { background:var(--surface-raised); }
+.project-heading-toggle:focus-visible, .project-heading-edit:focus-visible {
+  outline:2px solid var(--focus-ring); outline-offset:-2px;
+}
+.project-heading-toggle > svg { flex-shrink:0; }
+.project-heading-edit {
+  flex:0 0 27px; display:grid; place-items:center;
+  width:27px; height:27px; padding:0;
+  border:0; border-radius:6px; background:transparent; color:var(--muted);
+  cursor:pointer;
+}
+.project-heading-edit:hover { background:var(--surface-hover); color:var(--ink); }
+.project-rename-form { display:flex; align-items:center; gap:5px; padding:4px 6px; flex:1; min-width:0; }
+.project-rename-form input {
+  min-width:0; flex:1; height:31px; padding:0 8px;
+  border:1px solid var(--border-strong); border-radius:6px;
+  background:var(--surface-raised); color:var(--ink);
+  font:inherit; font-size:11px;
+}
+.project-rename-form button {
+  flex:0 0 28px; height:28px; display:grid; place-items:center;
+  border:1px solid var(--border); border-radius:5px;
+  background:var(--surface-subtle);color:var(--ink);cursor:pointer;
+}
+.project-rename-form button:disabled { opacity:.5;cursor:default; }
+.project-move-panel {
+  display:flex;flex-direction:column;gap:12px;
+  width:min(420px,calc(100vw - 32px));padding:24px;
+  border:1px solid var(--border); border-radius:13px;
+  background:var(--surface-raised);color:var(--ink);
+  box-shadow:0 18px 58px #00000030;
+}
+.project-move-panel h3 { margin:0; font-size:15px; }
+.project-move-panel p {
+  margin:0;color:var(--text-standard);font-size:11px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.project-move-panel label {font-size:11px;font-weight:600;}
+.project-move-panel select {
+  width:100%;min-height:36px;padding:0 9px;
+  border:1px solid var(--border-strong);border-radius:7px;
+  color:var(--ink);background:var(--surface-subtle);
+}
+.project-move-panel small {color:var(--muted);font-size:10px;line-height:1.5;}
+.project-move-actions {display:flex;justify-content:flex-end;gap:8px;}
+.project-move-actions button {
+  min-height:34px;padding:0 14px;border:1px solid var(--border);
+  border-radius:7px;background:var(--surface-subtle);color:var(--ink);cursor:pointer;
+}
+.project-move-actions button:last-child {background:var(--green);color:white;border:0;}
+.project-move-actions button:disabled {opacity:.5;cursor:default;}
+
+/* Persistent quota summary inside the Connected footer. */
+.daemon-state { align-items:stretch; flex-direction:column; gap:3px; }
+.daemon-state-main {display:flex;align-items:center;gap:7px;}
+.sidebar-quota { display:flex;flex-wrap:wrap;column-gap:10px;row-gap:3px;padding-left:13px;color:var(--text-standard);font-size:10px; }
+.sidebar-quota > span {white-space:nowrap;}
+.sidebar-quota strong {font-weight:650;color:var(--text-strong);}
+.sidebar-quota-error {padding-left:13px;color:var(--muted);font-size:10px;}

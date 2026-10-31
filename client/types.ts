@@ -85,6 +85,7 @@ export type ThreadSummary = {
   status: ThreadStatus;
   canAcceptDirectInput: boolean | null;
   archived?: boolean;
+  projectId?: string | null;
   parentThreadId?: string | null;
   agentNickname?: string | null;
   source?: string | { subAgent?: { thread_spawn?: { parent_thread_id?: string; agent_nickname?: string | null } } };
