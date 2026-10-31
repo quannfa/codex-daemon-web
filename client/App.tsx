@@ -59,6 +59,7 @@ import type {
   McpServerElicitationResponse,
   UserInput,
 } from "./types";
+import { groupProjectThreads, readProjectPreferences, projectPreferencesKey, type ProjectPreferences, type ProjectSort } from "./project-sidebar";
 import "./styles.css";
 
 type TimelineItem = ThreadItemEntry & { streaming?: boolean };
@@ -1858,6 +1859,14 @@ function WorkspaceApp() {
   const [archivedThreads, setArchivedThreads] = useState(false);
   const [threadCursor, setThreadCursor] = useState<string | null>(null);
   const [threadSearch, setThreadSearch] = useState("");
+  const [projectPreferences, setProjectPreferences] = useState<ProjectPreferences>(() => {
+    try { return readProjectPreferences(localStorage); }
+    catch { return { collapsed: {}, sort: "recent" }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(projectPreferencesKey, JSON.stringify(projectPreferences)); }
+    catch { /* Keep the sidebar usable when browser storage is unavailable. */ }
+  }, [projectPreferences]);
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
   const [sidebarSection, setSidebarSection] = useState<"chats" | "tasks">(
     "chats",
@@ -3788,6 +3797,10 @@ function WorkspaceApp() {
         .includes(query),
     );
   }, [threadSearch, threads]);
+  const projectGroups = useMemo(
+    () => groupProjectThreads(filteredThreads, projectPreferences.sort, archivedThreads),
+    [filteredThreads, projectPreferences.sort, archivedThreads],
+  );
   useEffect(() => {
     if (sidebarSearchOpen && sidebarSection === "chats")
       sidebarSearchRef.current?.focus();
@@ -5385,6 +5398,19 @@ function WorkspaceApp() {
               </button>
             </div>
           ) : null}
+          <label className="project-sort">
+            <span>Projects</span>
+            <select
+              aria-label="Sort projects"
+              value={projectPreferences.sort}
+              onChange={(event) => setProjectPreferences((current) => ({
+                ...current, sort: event.target.value as ProjectSort,
+              }))}
+            >
+              <option value="recent">Recent activity</option>
+              <option value="name">Project name</option>
+            </select>
+          </label>
           {filteredThreads.length === 0 ? (
             <div className="thread-list-empty">
               {threadSearch
@@ -5394,126 +5420,152 @@ function WorkspaceApp() {
                   : "Your recent work will appear here"}
             </div>
           ) : (
-            filteredThreads.map((thread) => {
-              const activityTimestamp = threadActivityTimestamp(
-                thread,
-                archivedThreads,
-              );
-              const activityTime = formatThreadActivityTime(activityTimestamp);
+            projectGroups.map((group) => {
+              const expanded = Boolean(threadSearch.trim()) || !projectPreferences.collapsed[group.cwd];
               return (
-                <div
-                  key={thread.id}
-                  className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""}`}
-                >
-                  {renameId === thread.id ? (
-                    <form
-                      className="rename-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveRename(thread.id);
-                      }}
-                    >
-                      <input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") setRenameId(null);
-                        }}
-                        aria-label="Conversation name"
-                      />
-                      <button aria-label="Save name">
-                        <Check size={15} />
-                      </button>
-                    </form>
-                  ) : (
-                    <>
-                      <button
-                        className="thread-select"
-                        aria-haspopup="menu"
-                        aria-expanded={
-                          threadContextMenu?.thread.id === thread.id
-                        }
-                        title="Right-click or long-press for conversation actions"
-                        onClick={(event) => {
-                          handleThreadSelectClick(event, thread);
-                        }}
-                        onDoubleClick={(event) => {
-                          event.preventDefault();
-                          renameThread(thread);
-                        }}
-                        onContextMenu={(event) =>
-                          handleThreadContextMenu(event, thread)
-                        }
-                        onKeyDown={(event) => {
-                          if (
-                            event.key !== "ContextMenu" &&
-                            !(event.shiftKey && event.key === "F10")
-                          )
-                            return;
-                          event.preventDefault();
-                          const bounds =
-                            event.currentTarget.getBoundingClientRect();
-                          openThreadContextMenu(
-                            thread,
-                            bounds.left + 12,
-                            bounds.bottom,
-                            event.currentTarget,
-                          );
-                        }}
-                        onPointerDown={(event) =>
-                          handleThreadPointerDown(event, thread)
-                        }
-                        onPointerMove={handleThreadPointerMove}
-                        onPointerUp={clearThreadLongPress}
-                        onPointerCancel={clearThreadLongPress}
-                      >
-                        <span className="thread-copy">
-                          <span className="thread-name">
-                            {titleFor(thread)}
-                          </span>
-                          <span className="thread-subtitle">
-                            {activityTime ? (
-                              <time
-                                dateTime={new Date(
-                                  activityTimestamp!,
-                                ).toISOString()}
+                <section className="project-group" key={group.cwd} aria-label={group.cwd || "No project"}>
+                  <button
+                    type="button"
+                    className="project-heading"
+                    aria-expanded={expanded}
+                    title={group.cwd || "Conversations without a project"}
+                    onClick={() => setProjectPreferences((current) => ({
+                      ...current,
+                      collapsed: { ...current.collapsed, [group.cwd]: !current.collapsed[group.cwd] },
+                    }))}
+                  >
+                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                    <span className="project-heading-copy">
+                      <strong>{group.name}</strong>
+                      <span className="project-path">{group.cwd || "No working directory"}</span>
+                    </span>
+                    <span className="project-thread-count" aria-label={`${group.threads.length} loaded conversations`}>{group.threads.length}</span>
+                  </button>
+                  {expanded ? <div className="project-conversations">
+                    {group.threads.map((thread) => {
+                      const activityTimestamp = threadActivityTimestamp(
+                        thread,
+                        archivedThreads,
+                      );
+                      const activityTime = formatThreadActivityTime(activityTimestamp);
+                      return (
+                        <div
+                          key={thread.id}
+                          className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""}`}
+                        >
+                          {renameId === thread.id ? (
+                            <form
+                              className="rename-form"
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                void saveRename(thread.id);
+                              }}
+                            >
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(event) => setRenameValue(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Escape") setRenameId(null);
+                                }}
+                                aria-label="Conversation name"
+                              />
+                              <button aria-label="Save name">
+                                <Check size={15} />
+                              </button>
+                            </form>
+                          ) : (
+                            <>
+                              <button
+                                className="thread-select"
+                                aria-haspopup="menu"
+                                aria-expanded={
+                                  threadContextMenu?.thread.id === thread.id
+                                }
+                                title="Right-click or long-press for conversation actions"
+                                onClick={(event) => {
+                                  handleThreadSelectClick(event, thread);
+                                }}
+                                onDoubleClick={(event) => {
+                                  event.preventDefault();
+                                  renameThread(thread);
+                                }}
+                                onContextMenu={(event) =>
+                                  handleThreadContextMenu(event, thread)
+                                }
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key !== "ContextMenu" &&
+                                    !(event.shiftKey && event.key === "F10")
+                                  )
+                                    return;
+                                  event.preventDefault();
+                                  const bounds =
+                                    event.currentTarget.getBoundingClientRect();
+                                  openThreadContextMenu(
+                                    thread,
+                                    bounds.left + 12,
+                                    bounds.bottom,
+                                    event.currentTarget,
+                                  );
+                                }}
+                                onPointerDown={(event) =>
+                                  handleThreadPointerDown(event, thread)
+                                }
+                                onPointerMove={handleThreadPointerMove}
+                                onPointerUp={clearThreadLongPress}
+                                onPointerCancel={clearThreadLongPress}
                               >
-                                {activityTime}
-                              </time>
-                            ) : null}
-                            {thread.cwd ? (
-                              <span
-                                className="thread-project"
-                                title={thread.cwd}
-                              >
-                                {projectNameFor(thread.cwd)}
-                              </span>
-                            ) : null}
-                          </span>
-                        </span>
-                      </button>
-                    </>
-                  )}
-                  {renameId !== thread.id ? (
-                    <button
-                      type="button"
-                      className="thread-row-action"
-                      aria-label={
-                        archivedThreads
-                          ? "Restore conversation"
-                          : "Archive conversation"
-                      }
-                      title={archivedThreads ? "Restore" : "Archive"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void archiveThread(thread);
-                      }}
-                    >
-                      <Archive size={13} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
+                                <span className="thread-copy">
+                                  <span className="thread-name">
+                                    {titleFor(thread)}
+                                  </span>
+                                  <span className="thread-subtitle">
+                                    {activityTime ? (
+                                      <time
+                                        dateTime={new Date(
+                                          activityTimestamp!,
+                                        ).toISOString()}
+                                      >
+                                        {activityTime}
+                                      </time>
+                                    ) : null}
+                                    {thread.cwd ? (
+                                      <span
+                                        className="thread-project"
+                                        title={thread.cwd}
+                                      >
+                                        {projectNameFor(thread.cwd)}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </span>
+                              </button>
+                            </>
+                          )}
+                          {renameId !== thread.id ? (
+                            <button
+                              type="button"
+                              className="thread-row-action"
+                              aria-label={
+                                archivedThreads
+                                  ? "Restore conversation"
+                                  : "Archive conversation"
+                              }
+                              title={archivedThreads ? "Restore" : "Archive"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void archiveThread(thread);
+                              }}
+                            >
+                              <Archive size={13} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div> : null}
+                </section>
               );
             })
           )}
