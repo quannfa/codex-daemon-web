@@ -1990,6 +1990,7 @@ function WorkspaceApp() {
   const [approvalPolicy, setApprovalPolicy] = useState("");
   const [sandboxMode, setSandboxMode] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
   const [disabledPluginIds, setDisabledPluginIds] = useState<string[]>([]);
   const [newVersionAvailable, setNewVersionAvailable] = useState(false);
   const [completionSoundEnabled, setCompletionSoundEnabled] = useState(
@@ -3167,8 +3168,10 @@ function WorkspaceApp() {
             isRecord(response.thread.status) &&
             response.thread.status.type === "active",
         };
-        if (response.thread.canAcceptDirectInput === false)
+        if (response.thread.canAcceptDirectInput === false) {
           setShowSettings(false);
+          setShowOptions(false);
+        }
         setSelectedThread((current) => {
           if (
             version !== loadVersionRef.current ||
@@ -4472,7 +4475,7 @@ function WorkspaceApp() {
           if (composerRef.current) composerRef.current.style.height = "39px";
         }
         clearUploadsIfUnchanged(uploadsAtSend);
-        setShowSettings(false);
+        setShowOptions(false);
       }
     } catch (error) {
       setNotice({
@@ -5730,7 +5733,7 @@ function WorkspaceApp() {
               className="icon-button sidebar-settings"
               aria-label="Settings"
               title="Settings"
-              onClick={() => setShowSettings(true)}
+              onClick={() => { setShowOptions(false); setShowSettings(true); }}
             >
               <Settings size={17} />
             </button>
@@ -6388,15 +6391,15 @@ function WorkspaceApp() {
                 </label>
                 <button
                   type="button"
-                  className={`composer-tool ${showSettings ? "active" : ""}`}
+                  className={`composer-tool ${showOptions ? "active" : ""}`}
                   title="Model and permission options"
-                  aria-expanded={showSettings}
+                  aria-expanded={showOptions}
                   disabled={
                     sending ||
                     queueing ||
                     selectedThread?.canAcceptDirectInput === false
                   }
-                  onClick={() => setShowSettings((value) => !value)}
+                  onClick={() => { setShowSettings(false); setShowOptions((value) => !value); }}
                 >
                   <Shield size={16} />
                   <span className="settings-label">Options</span>
@@ -6489,11 +6492,11 @@ function WorkspaceApp() {
                 )}
               </div>
             </div>
-            {showSettings
+            {(showSettings || showOptions)
               ? createPortal(
                   <div
                     className="modal-scrim settings-scrim"
-                    onClick={() => setShowSettings(false)}
+                    onClick={() => { setShowSettings(false); setShowOptions(false); }}
                   >
                     <section
                       className="settings-panel"
@@ -6502,26 +6505,27 @@ function WorkspaceApp() {
                       aria-labelledby="settings-title"
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
-                        if (event.key === "Escape") setShowSettings(false);
+                        if (event.key === "Escape") { setShowSettings(false); setShowOptions(false); }
                       }}
                     >
                       <div className="settings-panel-heading">
                         <div>
-                          <strong id="settings-title">Settings</strong>
-                          <span>
-                            Run choices, device preferences, and history.
-                          </span>
+                          <strong id="settings-title">{showOptions ? "Conversation Options" : "Global Settings"}</strong>
+                          <span>{showOptions
+                            ? "Model, reasoning, permissions, and plugin preferences for this conversation."
+                            : "Codex account, usage, installed apps, device preferences, and history."}</span>
                         </div>
                         <button
                           type="button"
                           className="icon-button"
                           aria-label="Close settings"
                           autoFocus
-                          onClick={() => setShowSettings(false)}
+                          onClick={() => { setShowSettings(false); setShowOptions(false); }}
                         >
                           <X size={16} />
                         </button>
                       </div>
+                      {showOptions ? (<>
                       <h3 className="settings-section-title">Run settings</h3>
                       <div className="settings-grid">
                         <label>
@@ -6628,9 +6632,10 @@ function WorkspaceApp() {
                           </div>
                         )}
                       </div>
-                      <ThreadPluginOptions rpc={client} visible={showSettings && connection === "online"}
+                      <ThreadPluginOptions rpc={client} visible={showOptions && connection === "online"}
                         threadId={selectedThread?.id || null} disabledIds={disabledPluginIds}
                         onChange={setDisabledPluginIds} />
+                      </>) : (<>
                       <CodexAccountPlugins rpc={client} visible={showSettings && connection === "online"} />
                       <div className="settings-preferences">
                         <div className="thread-indicator-preference-heading">
@@ -6804,6 +6809,7 @@ function WorkspaceApp() {
                           Sign out
                         </button>
                       </div>
+                      </>)}
                     </section>
                   </div>,
                   document.body,
