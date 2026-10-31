@@ -4472,3 +4472,5 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .codex-plugin-row span, .codex-extensions-note { font-size:9px; color:var(--muted); line-height:1.4; }
 .codex-extension-success, .codex-extension-error { font-size:10px; line-height:1.5; }
 .codex-extension-success { color:#29a567; } .codex-extension-error { color:var(--text-danger); }
+
+.codex-thread-plugins {display:flex; flex-direction:column; gap:8px; padding:13px 0; border-top:1px solid var(--border-soft);}

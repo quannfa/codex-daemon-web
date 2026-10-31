@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { RpcClient } from "./protocol";
 
 type AppEntry = { id: string; runtimeName: string | null; enabled: boolean; callable: boolean };
+type PluginEntry = {id: string; name: string; installed: boolean; enabled: boolean};
+type PluginMarketplace = {name: string; plugins: PluginEntry[]};
 type AccountInfo = { type: string; email?: string; planType?: string; workspaceName?: string };
 type LimitWindow = { usedPercent: number; windowDurationMins: number; resetsAt: number | null };
 type LimitBucket = { limitId: string; limitName: string | null; primary: LimitWindow | null; secondary: LimitWindow | null; planType?: string };
@@ -25,6 +27,7 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
   const [limits, setLimits] = useState<Limits | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [apps, setApps] = useState<AppEntry[]>([]);
+  const [installedPlugins, setInstalledPlugins] = useState<PluginEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -37,12 +40,19 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
       rpc.request<Limits>("account/rateLimits/read"),
       rpc.request<{apps: AppEntry[]}>("app/installed"),
       rpc.request<Usage>("account/usage/read"),
+      rpc.request<{marketplaces:PluginMarketplace[]}>("plugin/installed",{}),
     ]);
     if (results[0].status === "fulfilled") setAccount(results[0].value.account);
     if (results[1].status === "fulfilled") setLimits(results[1].value);
     if (results[2].status === "fulfilled") setApps(results[2].value.apps || []);
     if (results[3].status === "fulfilled") setUsage(results[3].value);
-    const failed = results.map((result,index) => result.status === "rejected" ? ["Account", "Rate limits", "Apps", "Token usage"][index] : null).filter(Boolean);
+    if (results[4].status === "fulfilled") {
+      const list = new Map<string,PluginEntry>();
+      for (const market of results[4].value.marketplaces || [])
+        for (const plugin of market.plugins || []) if (plugin.installed) list.set(plugin.id,plugin);
+      setInstalledPlugins([...list.values()].sort((a,b)=>a.name.localeCompare(b.name)));
+    }
+    const failed = results.map((result,index) => result.status === "rejected" ? ["Account", "Rate limits", "Apps", "Token usage", "Installed plugins"][index] : null).filter(Boolean);
     if (failed.length) setError(`Could not refresh: ${failed.join(", ")}. Other data may still be current.`);
     setBusy(false);
   }, [rpc]);
@@ -86,7 +96,12 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
       <RateWindow label={bucket.secondary?.windowDurationMins ? `${bucket.secondary.windowDurationMins}-minute window` : "Secondary window"} data={bucket.secondary}/>
     </div>) : <p className="codex-extensions-note">No ChatGPT subscription quota reported by the daemon.</p>}
     {typeof limits?.rateLimitResetCredits?.availableCount === "number" ? <p className="codex-extensions-note">Available rate-limit resets: {limits.rateLimitResetCredits.availableCount}</p> : null}
-    <div className="codex-extension-heading"><h3 className="settings-section-title">Installed apps / plugins</h3><span>{apps.length} available in Codex</span></div>
+    <div className="codex-extension-heading"><h3 className="settings-section-title">Installed Codex plugins</h3><span>{installedPlugins.length} installed</span></div>
+    <p className="codex-extensions-note">Read from the daemon's installed-plugin registry. Disabled-plugin preferences saved per conversation are not yet enforced by Codex 0.166.</p>
+    {installedPlugins.map(plugin => <div className="codex-plugin-row" key={plugin.id}>
+      <div><strong>{plugin.name}</strong><span>{plugin.enabled ? "Installed · enabled" : "Installed · disabled"} · {plugin.id}</span></div>
+    </div>)}
+    <div className="codex-extension-heading"><h3 className="settings-section-title">Connected apps · global controls</h3><span>{apps.length} apps</span></div>
     <p className="codex-extensions-note">These switches change the daemon-wide app configuration for all conversations, not only this chat. Managed policy or authentication may still prevent an enabled app from being callable.</p>
     {apps.length ? apps.map(app => <div className="codex-plugin-row" key={app.id}>
       <div><strong>{app.runtimeName || app.id}</strong><span>{app.callable ? "Callable" : app.enabled ? "Enabled · not callable" : "Disabled"}</span></div>

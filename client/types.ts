@@ -144,6 +144,7 @@ export type ScheduledTask = {
 };
 
 export type ThreadDetails = {
+  disabledPluginIds?: string[];
   cwd: string;
   model: string | null;
   approvalPolicy: unknown;

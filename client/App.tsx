@@ -45,6 +45,7 @@ import remarkGfm from "remark-gfm";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
 import CodexAccountPlugins from "./CodexAccountPlugins";
+import ThreadPluginOptions from "./ThreadPluginOptions";
 import type {
   ApprovalPrompt,
   DaemonStatus,
@@ -1989,6 +1990,7 @@ function WorkspaceApp() {
   const [approvalPolicy, setApprovalPolicy] = useState("");
   const [sandboxMode, setSandboxMode] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [disabledPluginIds, setDisabledPluginIds] = useState<string[]>([]);
   const [newVersionAvailable, setNewVersionAvailable] = useState(false);
   const [completionSoundEnabled, setCompletionSoundEnabled] = useState(
     readCompletionSoundPreference,
@@ -3147,6 +3149,7 @@ function WorkspaceApp() {
                 thread: { ...response.thread, name: confirmedName },
               };
         setThreadDetails(detailsResponse);
+        setDisabledPluginIds(Array.isArray(response.disabledPluginIds) ? response.disabledPluginIds : []);
         void refreshThreadQueue(rpc, threadId);
         setCwd(response.cwd || summary?.cwd || "");
         setModel(response.model || summary?.model || "");
@@ -3704,6 +3707,7 @@ function WorkspaceApp() {
     sessionStorage.removeItem(selectedThreadKey);
     setSelectedThread(null);
     setThreadDetails(null);
+    setDisabledPluginIds([]);
     setItems([]);
     itemsRef.current = [];
     liveItemsRef.current.clear();
@@ -4352,6 +4356,7 @@ function WorkspaceApp() {
 
       const turnParams: Record<string, unknown> = {
         threadId: threadId ?? "00000000-0000-0000-0000-000000000000",
+        disabledPluginIds,
         input,
       };
       if (model) turnParams.model = model;
@@ -6623,6 +6628,9 @@ function WorkspaceApp() {
                           </div>
                         )}
                       </div>
+                      <ThreadPluginOptions rpc={client} visible={showSettings && connection === "online"}
+                        threadId={selectedThread?.id || null} disabledIds={disabledPluginIds}
+                        onChange={setDisabledPluginIds} />
                       <CodexAccountPlugins rpc={client} visible={showSettings && connection === "online"} />
                       <div className="settings-preferences">
                         <div className="thread-indicator-preference-heading">
