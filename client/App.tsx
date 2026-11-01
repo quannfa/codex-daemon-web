@@ -46,6 +46,7 @@ import remarkGfm from "remark-gfm";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
 import CodexAccountPlugins from "./CodexAccountPlugins";
+import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
 import SidebarQuota from "./SidebarQuota";
 import type {
@@ -1999,6 +2000,8 @@ function WorkspaceApp() {
   const [approvalPolicy, setApprovalPolicy] = useState("");
   const [sandboxMode, setSandboxMode] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [interfaceLanguage,setInterfaceLanguageChoice] = useState<InterfaceLanguage>(readInterfaceLanguage);
+  useEffect(()=>{setInterfaceLanguage(interfaceLanguage);},[interfaceLanguage]);
   const [showOptions, setShowOptions] = useState(false);
   const [disabledPluginIds, setDisabledPluginIds] = useState<string[]>([]);
   const [newVersionAvailable, setNewVersionAvailable] = useState(false);
@@ -5374,6 +5377,8 @@ function WorkspaceApp() {
         busy={authBusy}
         error={authError || statusError}
         onSubmit={signIn}
+        language={interfaceLanguage}
+        setLanguage={setInterfaceLanguageChoice}
       />
     );
   }
@@ -6774,6 +6779,22 @@ function WorkspaceApp() {
                         threadId={selectedThread?.id || null} disabledIds={disabledPluginIds}
                         onChange={setDisabledPluginIds} />
                       </>) : (<>
+                      <div className="settings-preferences">
+                        <div className="settings-preference">
+                          <div>
+                            <strong>Interface language</strong>
+                            <span>Switch the interface between Chinese and English. Conversation content is unchanged.</span>
+                          </div>
+                          <label className="interface-language-field">
+                            <span className="sr-only">Language</span>
+                            <select aria-label="Interface language" value={interfaceLanguage}
+                              onChange={event=>setInterfaceLanguageChoice(event.target.value==="zh"?"zh":"en")}>
+                              <option value="zh">简体中文</option>
+                              <option value="en">English</option>
+                            </select>
+                          </label>
+                        </div>
+                      </div>
                       <CodexAccountPlugins rpc={client} visible={showSettings && connection === "online"} />
                       <div className="settings-preferences">
                         <div className="thread-indicator-preference-heading">
@@ -7419,18 +7440,30 @@ function LoginScreen({
   busy,
   error,
   onSubmit,
+  language,
+  setLanguage,
 }: {
   token: string;
   setToken: (value: string) => void;
   busy: boolean;
   error: string;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  language: InterfaceLanguage;
+  setLanguage: (value: InterfaceLanguage) => void;
 }) {
   return (
     <div className="login-page">
       <div className="login-ornament ornament-one" />
       <div className="login-ornament ornament-two" />
       <div className="login-card">
+        <label className="login-language">
+          <span className="sr-only">Interface language</span>
+          <select aria-label="Interface language" value={language}
+            onChange={(event)=>setLanguage(event.target.value==="zh"?"zh":"en")}>
+            <option value="zh">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
         <div className="login-brand">
           <span className="brand-mark">
             <Code2 size={18} />

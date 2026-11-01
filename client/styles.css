@@ -4542,3 +4542,12 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .sidebar-quota > span {white-space:nowrap;}
 .sidebar-quota strong {font-weight:650;color:var(--text-strong);}
 .sidebar-quota-error {padding-left:13px;color:var(--muted);font-size:10px;}
+
+/* Web interface locale selector. */
+.interface-language-field select {
+  font:inherit;min-height:33px;min-width:106px;border:1px solid var(--border-strong);
+  border-radius:7px;background:var(--surface-raised);color:var(--ink);padding:0 8px;
+}
+.login-language {display:flex;justify-content:flex-end;margin-bottom:7px;}
+.login-language select {min-height:30px;padding:0 9px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface-raised);color:var(--ink);font-size:12px;}
