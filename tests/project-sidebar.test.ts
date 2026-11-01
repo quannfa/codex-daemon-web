@@ -1,73 +1,72 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupProjectThreads, readProjectPreferences, projectCwdFor } from "../client/project-sidebar";
+import {
+  groupSidebarThreads, readProjectPreferences, buildAgentTreeRows,
+  agentParentId, agentDisplayName, type CodexProject,
+} from "../client/project-sidebar";
 import type { ThreadSummary } from "../client/types";
 
-const thread = (id: string, cwd: string, recencyAt: number | null = 10, updatedAt = 5) =>
-  ({ id, cwd, recencyAt, updatedAt, createdAt: 1 } as ThreadSummary);
+const thread = (id: string, cwd: string, projectId: string | null,
+  recencyAt: number | null = 10, updatedAt = 5): ThreadSummary =>
+  ({ id, cwd, projectId, recencyAt, updatedAt, createdAt: 1, preview: id } as ThreadSummary);
+const projects: CodexProject[] = [
+  {id:"p1",name:"Same Name",roots:[{path:"/a"}],recencyAt:null},
+  {id:"p2",name:"Same Name",roots:[{path:"/b"}],recencyAt:null},
+];
+const group = (threads: ThreadSummary[], sort:"recent"|"name"="recent", archived=false,
+  view:"projects"|"status"="projects") =>
+  groupSidebarThreads(threads,projects,sort,archived,view,t=>t.id==="error"?"error":"idle");
 
-test("groups by complete cwd, keeps namesakes separate, handles missing cwd and Windows paths", () => {
-  const groups = groupProjectThreads([
-    thread("1", "/a/app"), thread("2", "/b/app"), thread("3", ""),
-    thread("4", "/a/app"), thread("5", "C:\\code\\demo"),
-  ], "name", false);
-  assert.equal(groups.length, 4);
-  assert.equal(groups.find(g => g.cwd === "/a/app")?.threads.length, 2);
-  assert.equal(groups.find(g => !g.cwd)?.name, "No project");
-  assert.equal(groups.find(g => g.cwd.startsWith("C:"))?.name, "demo");
-});
-
-test("sorts projects and threads by activity without mutating source; archives use updatedAt", () => {
-  const source = [thread("old", "/z", 1, 30), thread("new", "/z", 20, 2), thread("a", "/a", 10, 10)];
-  const before = [...source];
-  assert.deepEqual(groupProjectThreads(source, "recent", false).map(g => g.cwd), ["/z", "/a"]);
-  assert.deepEqual(groupProjectThreads(source, "recent", false)[0].threads.map(t => t.id), ["new", "old"]);
-  assert.deepEqual(groupProjectThreads(source, "name", false).map(g => g.cwd), ["/a", "/z"]);
-  assert.equal(groupProjectThreads(source, "recent", true)[0].threads[0].id, "old");
-  assert.deepEqual(source, before);
-});
-
-test("normalizes seconds and milliseconds, handles missing activity and deterministic ties", () => {
-  const groups = groupProjectThreads([thread("b", "/b", 1700000000), thread("a", "/a", 1700000000000), thread("c", "/c", null, 1800000000)], "recent", false);
-  assert.deepEqual(groups.map(g => g.cwd), ["/c", "/a", "/b"]);
-});
-
-test("reads persisted preferences defensively and tolerates blocked storage", () => {
-  const read = (value: string | null) => readProjectPreferences({ getItem: () => value });
-  assert.deepEqual(read(null), { collapsed: Object.create(null), sort: "recent" });
-  assert.deepEqual(read("{"), { collapsed: {}, sort: "recent" });
-  assert.deepEqual(readProjectPreferences({ getItem: () => { throw Error("denied"); } }), { collapsed: {}, sort: "recent" });
-  const stored = read('{"sort":"name","collapsed":{"/a":true,"/b":false,"/bad":"yes","__proto__":true}}');
-  assert.equal(stored.sort, "name");
-  assert.equal(stored.collapsed["/a"], true);
-  assert.equal(stored.collapsed["/b"], false);
-  assert.equal(stored.collapsed["/bad"], undefined);
-  assert.equal(stored.collapsed["__proto__"], true);
-  assert.equal(read('{"sort":"invalid","collapsed":[]}').sort, "recent");
-});
-
-test("projectless generated directories collapse into one group on Linux and Windows", () => {
-  const win = (path: string) => path.replaceAll("/", String.fromCharCode(92));
-  const paths = [
-    "/home/zqf/Documents/Codex/2026-10-31/chat-one",
-    "/home/zqf/Documents/Codex/2026-10-30/chat-two/outputs",
-    win("C:/Users/Alice/Documents/Codex/2026-10-31/chat"),
-    win("//?/C:/Users/Alice/Documents/Codex/2026-10-31/chat"),
-    "/home/zqf", "/Users/Alice", win("C:/Users/Alice"), "/tmp", "/",
+test("groups by canonical project ID regardless of cwd, preserves name collisions",()=>{
+  const source=[
+    thread("a","/unrelated","p1"),
+    thread("b","/a","p2"),
+    thread("c","/a","p1"),
+    thread("d","/a",null),
+    thread("e","/b","unknown"),
   ];
-  const groups = groupProjectThreads(paths.map((cwd, i) => thread(String(i), cwd)), "recent", false);
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].cwd, "");
-  assert.equal(groups[0].threads.length, paths.length);
-  assert.equal(projectCwdFor(thread("real", "/home/zqf/Documents/ChatGPT/CVPR")), "/home/zqf/Documents/ChatGPT/CVPR");
-  assert.equal(projectCwdFor(thread("real", "/home/zqf/Documents/Codex/my-repo")), "/home/zqf/Documents/Codex/my-repo");
+  const before=source.map(t=>t.cwd);
+  const grouped=group(source);
+  assert.equal(grouped.length,3);
+  assert.deepEqual(grouped.find(g=>g.projectId==="p1")?.threads.map(t=>t.id),["a","c"]);
+  assert.deepEqual(grouped.find(g=>g.projectId==="p2")?.threads.map(t=>t.id),["b"]);
+  assert.deepEqual(grouped.find(g=>g.kind==="unassigned")?.threads.map(t=>t.id),["d","e"]);
+  assert.deepEqual(source.map(t=>t.cwd),before);
 });
 
-test("explicit membership overrides path inference without changing conversation cwd", () => {
-  const assigned = thread("assigned", "/home/zqf/Documents/Codex/2026-10-31/real-project");
-  const projectless = thread("none", "/some/custom/output");
-  const membership = { projectlessThreadIds: ["none"], projectThreadIds: ["assigned"] };
-  assert.equal(projectCwdFor(assigned, membership), assigned.cwd);
-  assert.equal(projectCwdFor(projectless, membership), "");
-  assert.equal(projectless.cwd, "/some/custom/output");
+test("sorting is stable, uses recency for active threads and updatedAt for archived",()=>{
+  const source=[thread("old","/a","p1",1,30),thread("new","/a","p1",20,2),
+    thread("other","/b","p2",10,10)];
+  assert.deepEqual(group(source)[0].threads.map(t=>t.id),["new","old"]);
+  assert.deepEqual(group(source,"recent",true)[0].threads.map(t=>t.id),["old","new"]);
+  assert.deepEqual(group(source,"name").map(g=>g.projectId),["p1","p2"]);
+});
+
+test("status view groups by status and ignores project membership",()=>{
+  const result=group([thread("error","/a","p1"),thread("ok","/b","p2")],"recent",false,"status");
+  assert.deepEqual(result.map(g=>g.cwd),["status:error","status:idle"]);
+  assert.deepEqual(result.map(g=>g.threads[0].id),["error","ok"]);
+});
+
+test("reads preferences defensively and handles blocked storage",()=>{
+  const read=(value:string|null)=>readProjectPreferences({getItem:()=>value});
+  assert.equal(read(null).view,"projects");
+  assert.deepEqual(read("{"),{collapsed:{},sort:"recent",view:"projects"});
+  assert.deepEqual(readProjectPreferences({getItem:()=>{throw Error("denied");}}),
+    {collapsed:{},sort:"recent",view:"projects"});
+  const stored=read("{\"sort\":\"name\",\"view\":\"status\",\"collapsed\":{\"p1\":true,\"invalid\":\"yes\"}}");
+  assert.equal(stored.sort,"name");
+  assert.equal(stored.view,"status");
+  assert.equal(stored.collapsed.p1,true);
+  assert.equal(stored.collapsed.invalid,undefined);
+});
+
+test("nested child agent tree respects collapsed state and subagent metadata",()=>{
+  const root=thread("root","/root","p1");
+  const agent=thread("agent","/root","p1");
+  (agent as any).source={subAgent:{thread_spawn:{parent_thread_id:"root",agent_nickname:"Researcher"}}};
+  assert.equal(agentParentId(agent),"root");
+  assert.equal(agentDisplayName(agent),"Researcher");
+  assert.deepEqual(buildAgentTreeRows([root],[agent],{},false).map(row=>row.depth),[0,1]);
+  assert.deepEqual(buildAgentTreeRows([root],[agent],{root:true},false).map(row=>row.depth),[0]);
 });
