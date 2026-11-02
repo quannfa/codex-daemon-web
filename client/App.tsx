@@ -70,7 +70,7 @@ import type {
   McpServerElicitationResponse,
   UserInput,
 } from "./types";
-import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
+import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, buildProjectCreateParams, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
 import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./thread-status";
 import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
 import "./styles.css";
@@ -1907,6 +1907,10 @@ function WorkspaceApp() {
 
   const [projectRenameId, setProjectRenameId] = useState<string|null>(null);
   const [projectRenameValue, setProjectRenameValue] = useState("");
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
+  const [projectCreateName, setProjectCreateName] = useState("");
+  const [projectCreateRoot, setProjectCreateRoot] = useState("");
+  const [projectCreateIdempotencyKey, setProjectCreateIdempotencyKey] = useState("");
   const [projectMoveThread, setProjectMoveThread] = useState<ThreadSummary|null>(null);
   const [archiveConfirmThread,setArchiveConfirmThread]=useState<ThreadSummary|null>(null);
   const [archiveMutationBusy,setArchiveMutationBusy]=useState(false);
@@ -2729,6 +2733,37 @@ function WorkspaceApp() {
     if (!client || connection !== "online") return;
     void refreshProjects(client);
   }, [client,connection,refreshProjects]);
+
+  const openProjectCreate = () => {
+    setProjectCreateName("");
+    setProjectCreateRoot(selectedThread?.cwd || cwd || "");
+    setProjectCreateIdempotencyKey(clientUUID());
+    setProjectCreateOpen(true);
+  };
+  const createCodexProject = async () => {
+    const name=projectCreateName.trim();
+    const root=projectCreateRoot.trim();
+    if(!client||!name||!root||projectMutationBusy)return;
+    let params;
+    try { params=buildProjectCreateParams(name,root,projectCreateIdempotencyKey); }
+    catch(error) { setNotice({tone:"error",text:shortError(error)}); return; }
+    setProjectMutationBusy(true);
+    try {
+      const result=await client.request<{project:CodexProject}>("project/create",params);
+      if(!result?.project?.id)throw new Error("Codex did not return the created project.");
+      setCodexProjects(current=>[result.project,...current.filter(project=>project.id!==result.project.id)]);
+      setNewProjectId(result.project.id);
+      setCwd(root);
+      setProjectCreateOpen(false);
+      setProjectCreateIdempotencyKey("");
+      setNotice({tone:"success",text:"Created Codex project: "+result.project.name});
+      void refreshProjects(client);
+    } catch(error) {
+      setNotice({tone:"error",text:"Could not create project: "+shortError(error)});
+    } finally {
+      setProjectMutationBusy(false);
+    }
+  };
 
   const renameCodexProject = async (projectId:string) => {
     const name=projectRenameValue.trim();
@@ -5731,6 +5766,12 @@ function WorkspaceApp() {
               <option value="name">Project name</option>
             </select>
           </label> : null}
+          {!archivedThreads ? (
+            <button type="button" className="project-create-trigger" onClick={openProjectCreate}>
+              <Plus size={14} aria-hidden="true" />
+              <span>New project</span>
+            </button>
+          ) : null}
           <div className="thread-status-legend" aria-label="Conversation status legend">
             {threadStatusOrder.filter((kind) => threadStatusPreferences[kind].enabled).map((kind) => (
               <span key={kind}>
@@ -6069,6 +6110,37 @@ function WorkspaceApp() {
               </button>
             </div>
           </div>
+        </div>,document.body
+      ):null}
+
+      {projectCreateOpen ? createPortal(
+        <div className="modal-scrim settings-scrim"
+          onClick={()=>!projectMutationBusy&&setProjectCreateOpen(false)}>
+          <form className="project-move-panel project-create-panel" role="dialog" aria-modal="true"
+            aria-labelledby="project-create-title"
+            onClick={event=>event.stopPropagation()}
+            onSubmit={event=>{event.preventDefault();void createCodexProject();}}
+            onKeyDown={event=>{if(event.key==="Escape"&&!projectMutationBusy)setProjectCreateOpen(false);}}>
+            <h3 id="project-create-title">Create Codex project</h3>
+            <label htmlFor="project-create-name">Project name</label>
+            <input id="project-create-name" autoFocus required maxLength={120}
+              value={projectCreateName} disabled={projectMutationBusy}
+              onChange={event=>setProjectCreateName(event.target.value)}
+              placeholder="e.g. Research project" />
+            <label htmlFor="project-create-root">Project root directory</label>
+            <input id="project-create-root" required autoCapitalize="off" autoCorrect="off"
+              spellCheck={false} value={projectCreateRoot} disabled={projectMutationBusy}
+              onChange={event=>setProjectCreateRoot(event.target.value)}
+              placeholder="/absolute/path/on/codex-host" />
+            <small>Enter an absolute directory path on the Codex host. This registers the root with Codex; it does not create or move files.</small>
+            <div className="project-move-actions">
+              <button type="button" disabled={projectMutationBusy}
+                onClick={()=>setProjectCreateOpen(false)}>Cancel</button>
+              <button type="submit" disabled={projectMutationBusy||!projectCreateName.trim()||!projectCreateRoot.trim()}>
+                {projectMutationBusy?"Creating…":"Create project"}
+              </button>
+            </div>
+          </form>
         </div>,document.body
       ):null}
 

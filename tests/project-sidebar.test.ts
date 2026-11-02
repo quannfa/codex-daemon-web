@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  groupSidebarThreads, readProjectPreferences, buildAgentTreeRows,
+  groupSidebarThreads, readProjectPreferences, buildAgentTreeRows, buildProjectCreateParams,
   agentParentId, agentDisplayName, type CodexProject,
 } from "../client/project-sidebar";
 import type { ThreadSummary } from "../client/types";
@@ -69,4 +69,13 @@ test("nested child agent tree respects collapsed state and subagent metadata",()
   assert.equal(agentDisplayName(agent),"Researcher");
   assert.deepEqual(buildAgentTreeRows([root],[agent],{},false).map(row=>row.depth),[0,1]);
   assert.deepEqual(buildAgentTreeRows([root],[agent],{root:true},false).map(row=>row.depth),[0]);
+});
+
+test("builds an official Codex project/create request with a stable idempotency key",()=>{
+  assert.deepEqual(buildProjectCreateParams("  New research  ","  /data/research  ","stable-key"),{
+    name:"New research",roots:[{path:"/data/research"}],idempotencyKey:"stable-key",
+  });
+  assert.throws(()=>buildProjectCreateParams("  ","/data/research","key"),/name is required/i);
+  assert.throws(()=>buildProjectCreateParams("Research","relative/path","key"),/absolute path/i);
+  assert.throws(()=>buildProjectCreateParams("Research","/data/research",""),/idempotency key/i);
 });

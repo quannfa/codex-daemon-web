@@ -13,6 +13,11 @@ Groups can be sorted by recent activity or name. Conversations are ordered by
 activity within groups; archived views use updated time. Browser preferences
 store sorting and expansion choices. Search reveals matching nested agents.
 
+Projects can be created from the sidebar using the official `project/create`
+app-server method. Creation registers a name and one absolute root directory;
+it does not create or move files. A stable idempotency key is reused when the
+client retries an ambiguous request.
+
 New conversations may be assigned to Codex projects, and existing conversations
 may be moved using canonical Codex project membership operations.
 

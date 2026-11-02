@@ -4644,3 +4644,19 @@ html[data-keyboard-visible="true"] .composer-wrap {
   border-radius:7px;
   margin-top:6px;
 }
+
+.project-create-trigger {
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  width:calc(100% - 12px);min-height:32px;margin:2px 6px 9px;
+  border:1px dashed var(--border-strong);border-radius:7px;
+  background:transparent;color:var(--text-standard);font:inherit;font-size:11px;
+  cursor:pointer;
+}
+.project-create-trigger:hover {background:var(--surface-raised);color:var(--ink);border-style:solid;}
+.project-create-trigger:focus-visible {outline:2px solid var(--focus-ring);outline-offset:2px;}
+.project-create-panel input {
+  width:100%;min-height:36px;padding:0 9px;
+  border:1px solid var(--border-strong);border-radius:7px;
+  color:var(--ink);background:var(--surface-subtle);font:inherit;font-size:12px;
+}
+.project-create-panel input:focus-visible {outline:2px solid var(--focus-ring);outline-offset:1px;}

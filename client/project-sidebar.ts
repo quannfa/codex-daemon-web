@@ -114,6 +114,20 @@ export type CodexProject = {
   roots: Array<{path:string}>;
   recencyAt: number | null;
 };
+export type ProjectCreateParams = {
+  name: string;
+  roots: Array<{path:string}>;
+  idempotencyKey: string;
+};
+export function buildProjectCreateParams(name:string, root:string, idempotencyKey:string):ProjectCreateParams {
+  const normalizedName=name.trim();
+  const normalizedRoot=root.trim();
+  if(!normalizedName)throw new Error("Project name is required.");
+  if(!normalizedRoot.startsWith("/") || normalizedRoot.includes("\0"))
+    throw new Error("Project root must be an absolute path on the Codex host.");
+  if(!idempotencyKey)throw new Error("Project creation idempotency key is missing.");
+  return {name:normalizedName,roots:[{path:normalizedRoot}],idempotencyKey};
+}
 export type SidebarView = "projects" | "status";
 export type SidebarThreadGroup = {
   cwd: string; name: string; path: string; projectId: string | null;
