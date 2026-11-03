@@ -1,10 +1,8 @@
-/** A shareable route contains no conversation content or credentials. */
-export function conversationDeepLink(origin:string,pathname:string,threadId:string):string{
-  if(!threadId||/[\u0000-\u001f\u007f]/.test(threadId))throw new Error("Invalid thread ID");
-  const base=new URL(pathname||"/",origin);
-  base.search="";
-  base.hash="#/thread/"+encodeURIComponent(threadId);
-  return base.href;
+/** Codex-native thread reference for sharing context with another Codex conversation.
+ * It is not a browser URL and contains no credentials or conversation content. */
+export function codexThreadLink(threadId:string):string{
+  if(!/^[a-f0-9-]{20,}$/i.test(threadId))throw new Error("Invalid Codex thread ID.");
+  return "codex://threads/"+threadId;
 }
 
 /** Codex app-server forks by turns, not arbitrary item IDs. */

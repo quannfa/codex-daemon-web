@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {conversationDeepLink,forkAtMessage} from "../client/conversation-actions";
+import {codexThreadLink,forkAtMessage} from "../client/conversation-actions";
 
-test("links use the current webui mount and omit URL query credentials",()=>{
-  assert.equal(conversationDeepLink("https://example.test","/codex/","thread-123"),
-    "https://example.test/codex/#/thread/thread-123");
-  assert.equal(conversationDeepLink("https://example.test","/","abc def"),
-    "https://example.test/#/thread/abc%20def");
-  assert.throws(()=>conversationDeepLink("https://example.test","/","bad\nthread"));
+test("copies a Codex-native thread reference, not a WebUI browser URL",()=>{
+  const id="01a1782f-e308-73a0-8f48-cc7382e27650";
+  assert.equal(codexThreadLink(id),`codex://threads/${id}`);
+  assert.throws(()=>codexThreadLink(""),/Invalid Codex thread ID/);
+  assert.throws(()=>codexThreadLink("relative-path"),/Invalid Codex thread ID/);
+  assert.throws(()=>codexThreadLink("01a1782f-e308-73a0-8f48-cc7382e27650?token=x"),/Invalid Codex thread ID/);
 });
 test("fork user messages before their turn and assistant messages through their turn",()=>{
   assert.deepEqual(forkAtMessage("parent","turn-1","userMessage"),

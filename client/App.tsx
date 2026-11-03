@@ -53,7 +53,7 @@ import ScheduledTasks from "./ScheduledTasks";
 import ThreadGoalPanel from "./ThreadGoalPanel";
 import FileReferenceViewer from "./FileReferenceViewer";
 import {clientUUID} from "./client-uuid";
-import {conversationDeepLink,forkAtMessage} from "./conversation-actions";
+import {codexThreadLink,forkAtMessage} from "./conversation-actions";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
@@ -3529,7 +3529,7 @@ function WorkspaceApp() {
 
   const copyConversationLink = async (threadId:string) => {
     try {
-      const link=conversationDeepLink(window.location.origin,window.location.pathname,threadId);
+      const link=codexThreadLink(threadId);
       if(navigator.clipboard?.writeText){
         try { await navigator.clipboard.writeText(link); }
         catch {
@@ -3546,7 +3546,7 @@ function WorkspaceApp() {
         const copied=document.execCommand("copy");input.remove();
         if(!copied)throw new Error("Clipboard is unavailable.");
       }
-      setNotice({tone:"success",text:"Conversation link copied."});
+      setNotice({tone:"success",text:"Codex thread reference copied."});
     }catch(error){
       setNotice({tone:"error",text:"Could not copy link: "+shortError(error)});
     }
@@ -6010,8 +6010,8 @@ function WorkspaceApp() {
                           )}
                           {renameId !== thread.id ? (
                             <button type="button" className="thread-row-action"
-                              aria-label={`Copy link to ${titleFor(thread)}`}
-                              title="Copy conversation link"
+                              aria-label={`Copy Codex thread reference for ${titleFor(thread)}`}
+                              title="Copy Codex thread reference"
                               onClick={event=>{event.stopPropagation();void copyConversationLink(thread.id);}}>
                               <Link2 size={13} aria-hidden="true"/>
                             </button>
@@ -6271,8 +6271,8 @@ function WorkspaceApp() {
           </div>
           <div className="topbar-right">
             {selectedThread ? <button type="button" className="project-topbar-move"
-              title="Copy conversation deep link"
-              aria-label="Copy conversation deep link"
+              title="Copy Codex thread reference"
+              aria-label="Copy Codex thread reference"
               onClick={()=>void copyConversationLink(selectedThread.id)}>
               <Link2 size={15}/> <span>Link</span>
             </button>:null}
