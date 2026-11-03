@@ -12,6 +12,8 @@ import {
   FolderInput,
   Globe,
   ImagePlus,
+  GitBranch,
+  Link2,
   LoaderCircle,
   Menu,
   MessageSquareText,
@@ -45,11 +47,13 @@ import {
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {MarkdownCodeBlock} from "./MarkdownCodeBlock";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
 import ThreadGoalPanel from "./ThreadGoalPanel";
 import FileReferenceViewer from "./FileReferenceViewer";
 import {clientUUID} from "./client-uuid";
+import {conversationDeepLink,forkAtMessage} from "./conversation-actions";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
@@ -1888,6 +1892,7 @@ function WorkspaceApp() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [notice, setNotice] = useState<AppNotice | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
@@ -3521,6 +3526,47 @@ function WorkspaceApp() {
       updateThreadTrail,
     ],
   );
+
+  const copyConversationLink = async (threadId:string) => {
+    try {
+      const link=conversationDeepLink(window.location.origin,window.location.pathname,threadId);
+      if(navigator.clipboard?.writeText){
+        try { await navigator.clipboard.writeText(link); }
+        catch {
+          const input=document.createElement("textarea");
+          input.value=link;input.style.position="fixed";input.style.opacity="0";
+          document.body.appendChild(input);input.select();
+          const copied=document.execCommand("copy");input.remove();
+          if(!copied)throw new Error("Clipboard permission denied.");
+        }
+      } else {
+        const input=document.createElement("textarea");
+        input.value=link;input.style.position="fixed";input.style.opacity="0";
+        document.body.appendChild(input);input.select();
+        const copied=document.execCommand("copy");input.remove();
+        if(!copied)throw new Error("Clipboard is unavailable.");
+      }
+      setNotice({tone:"success",text:"Conversation link copied."});
+    }catch(error){
+      setNotice({tone:"error",text:"Could not copy link: "+shortError(error)});
+    }
+  };
+  const forkConversationAtMessage = async (entry:TimelineItem) => {
+    if(!client||!selectedThread?.id||!entry.turnId||entry.streaming||forkBusy)return;
+    if(entry.item.type!=="userMessage"&&entry.item.type!=="agentMessage")return;
+    setForkBusy(true);
+    try{
+      const params=forkAtMessage(selectedThread.id,entry.turnId,entry.item.type);
+      const result=await client.request<{thread:{id:string}}>("thread/fork",params);
+      const id=result?.thread?.id;
+      if(!id)throw new Error("Codex did not return a forked thread.");
+      await navigateToThread(id,[],"push");
+      void refreshThreads(client,false,false);
+      setNotice({tone:"success",text:"Conversation fork created."});
+    }catch(error){
+      setNotice({tone:"error",text:"Could not fork conversation: "+shortError(error)});
+    }finally{setForkBusy(false);}
+  };
 
   const openAgentThread = useCallback(
     (threadId: string, parentThreadId?: string) => {
@@ -5963,6 +6009,14 @@ function WorkspaceApp() {
                             </>
                           )}
                           {renameId !== thread.id ? (
+                            <button type="button" className="thread-row-action"
+                              aria-label={`Copy link to ${titleFor(thread)}`}
+                              title="Copy conversation link"
+                              onClick={event=>{event.stopPropagation();void copyConversationLink(thread.id);}}>
+                              <Link2 size={13} aria-hidden="true"/>
+                            </button>
+                          ) : null}
+                          {renameId !== thread.id ? (
                             <button
                               type="button"
                               className="thread-row-action"
@@ -6217,6 +6271,12 @@ function WorkspaceApp() {
           </div>
           <div className="topbar-right">
             {selectedThread ? <button type="button" className="project-topbar-move"
+              title="Copy conversation deep link"
+              aria-label="Copy conversation deep link"
+              onClick={()=>void copyConversationLink(selectedThread.id)}>
+              <Link2 size={15}/> <span>Link</span>
+            </button>:null}
+            {selectedThread ? <button type="button" className="project-topbar-move"
               title="Move this conversation to a Codex project"
               aria-label="Move conversation to project"
               onClick={()=>{setProjectMoveThread(selectedThread);setProjectMoveTarget(selectedThread.projectId||"");}}>
@@ -6420,6 +6480,8 @@ function WorkspaceApp() {
                   key={group.key}
                   entry={group.entry}
                   onOpenThread={openAgentThread}
+                  onFork={forkConversationAtMessage}
+                  forkBusy={forkBusy}
                 />
               );
             const openKey = `${selectedRef.current ?? "new"}:${group.key}`;
@@ -7966,9 +8028,13 @@ function OptimisticMessageBubble({message,onRestore}:{
 function TimelineCard({
   entry,
   onOpenThread,
+  onFork,
+  forkBusy,
 }: {
   entry: TimelineItem;
   onOpenThread: (threadId: string, parentThreadId?: string) => void;
+  onFork?: (entry:TimelineItem)=>void;
+  forkBusy?: boolean;
 }) {
   const item = entry.item;
   if (item.type === "userMessage") {
@@ -7977,10 +8043,16 @@ function TimelineCard({
       : [];
     return (
       <article className="message-row user-row">
-        <div className="user-message-bubble">
-          {content.map((part, index) => (
-            <UserInputPart key={index} part={part} />
-          ))}
+        <div className="user-message-with-actions">
+          <div className="user-message-bubble">
+            {content.map((part, index) => (
+              <UserInputPart key={index} part={part} />
+            ))}
+          </div>
+          {entry.turnId ? <button type="button" className="message-fork-button"
+            disabled={forkBusy||Boolean(entry.streaming)}
+            title="Fork before this user turn"
+            onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
         </div>
       </article>
     );
@@ -7999,6 +8071,9 @@ function TimelineCard({
             </div>
           ) : null}
           <MarkdownContent text={text} />
+          {entry.turnId && !entry.streaming ? <button type="button" className="message-fork-button"
+            disabled={forkBusy} title="Fork through this completed assistant turn"
+            onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
           {item.delivery === "failed" ? (
             <p className="delivery-error">
               This response could not be delivered.
@@ -8538,6 +8613,7 @@ function MarkdownContent({ text }: { text: string }) {
         components={{
           a: MarkdownLink,
           img: MarkdownImage,
+          pre: MarkdownCodeBlock,
         }}
       >
         {text}

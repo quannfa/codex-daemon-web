@@ -4660,3 +4660,54 @@ html[data-keyboard-visible="true"] .composer-wrap {
   color:var(--ink);background:var(--surface-subtle);font:inherit;font-size:12px;
 }
 .project-create-panel input:focus-visible {outline:2px solid var(--focus-ring);outline-offset:1px;}
+
+/* Conversation branching and permalink actions. */
+.user-message-with-actions {display:flex;flex-direction:column;align-items:flex-end;min-width:0;max-width:100%;}
+.user-message-with-actions .user-message-bubble {max-width:min(100%,680px);}
+.message-fork-button {
+  display:inline-flex;align-items:center;gap:5px;
+  align-self:flex-start;margin-top:5px;padding:3px 6px;
+  border:0;border-radius:5px;background:transparent;color:var(--muted);
+  font:10px var(--font-body,inherit);cursor:pointer;
+}
+.user-message-with-actions .message-fork-button {align-self:flex-end;}
+.message-fork-button:hover {background:var(--surface-hover);color:var(--ink);}
+.message-fork-button:disabled {opacity:.45;cursor:default;}
+.message-fork-button:focus-visible {outline:2px solid var(--focus-ring);}
+
+/* Extended Markdown: copyable highlighted code and sanitized diagrams. */
+.markdown-code-block {
+  max-width:100%;min-width:0;margin:11px 0;
+  border:1px solid var(--border);border-radius:9px;
+  overflow:hidden;background:var(--surface-sidebar);
+}
+.markdown-code-toolbar {
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
+  min-height:31px;padding:4px 10px;border-bottom:1px solid var(--border);
+  color:var(--muted);font:10px var(--mono);
+}
+.markdown-code-toolbar > div {display:flex;gap:5px;}
+.markdown-code-toolbar button {
+  padding:4px 7px;border:1px solid var(--border);border-radius:5px;
+  background:var(--surface-raised);color:var(--ink);font:10px var(--mono);
+  cursor:pointer;
+}
+.markdown-code-toolbar button:hover {background:var(--surface-hover);}
+.markdown-content .markdown-code-source {
+  margin:0;padding:13px;overflow-x:auto;border:0;border-radius:0;
+  color:#c9d1d9;background:#0d1117;font:11px/1.65 var(--mono);
+}
+.markdown-content .markdown-code-source code,
+.markdown-content .markdown-code-source .hljs {
+  display:block;padding:0;background:transparent;color:#c9d1d9;
+  font:inherit;white-space:pre;
+}
+.markdown-diagram {
+  max-width:100%;overflow-x:auto;
+  padding:12px;background:#fff;color:#222;text-align:center;
+}
+.markdown-diagram svg {display:block;max-width:100%;height:auto;margin:0 auto;}
+.markdown-diagram-loading,.markdown-diagram-error {
+  display:block;padding:12px;color:var(--muted);font-size:11px;
+}
+.markdown-diagram-error {color:var(--text-danger);}
