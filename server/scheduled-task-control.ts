@@ -129,6 +129,10 @@ async function handleControlRequest(
 ): Promise<unknown> {
   const id = typeof request.id === "string" ? request.id : "";
   switch (request.operation) {
+    case "validateThread": {
+      const threadId=await store.validateThreadId(requiredId(id));
+      return {threadId,conversationLink:"codex://threads/"+threadId};
+    }
     case "list":
       return store.list(request.includeArchived === true);
     case "get":

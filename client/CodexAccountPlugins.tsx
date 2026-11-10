@@ -22,7 +22,7 @@ function RateWindow({ label, data }: {label: string; data: LimitWindow | null}) 
     <small>{used === null ? "Usage unknown" : `${used.toFixed(1)}% used`} · Resets {localTime(data.resetsAt)}</small>
   </div>;
 }
-export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | null; visible: boolean}) {
+export default function CodexAccountPlugins({ rpc, visible, section = "account" }: {rpc: RpcClient | null; visible: boolean; section?: "account" | "extensions"}) {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -83,7 +83,8 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
   if (!buckets.length && limits?.rateLimits) buckets.push(limits.rateLimits);
   const tokenTotal = usage?.summary?.lifetimeTokens;
   return <div className="codex-extensions">
-    <div className="codex-extension-heading"><h3 className="settings-section-title">Codex account & limits</h3><button type="button" className="settings-toggle" onClick={() => void refresh()} disabled={busy || !rpc}>{busy ? "Refreshing…" : "Refresh"}</button></div>
+    <div className="codex-extension-heading"><h3 className="settings-section-title">{section === "account" ? "Codex account & limits" : "Apps & plugins"}</h3><button type="button" className="settings-toggle" onClick={() => void refresh()} disabled={busy || !rpc}>{busy ? "Refreshing…" : "Refresh"}</button></div>
+    {section === "account" ? <>
     <div className="codex-account-lines">
       <div><span>Account</span><strong>{account?.email || account?.type || "Unavailable"}</strong></div>
       <div><span>Subscription</span><strong>{account?.planType || "Unknown"}</strong></div>
@@ -96,6 +97,7 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
       <RateWindow label={bucket.secondary?.windowDurationMins ? `${bucket.secondary.windowDurationMins}-minute window` : "Secondary window"} data={bucket.secondary}/>
     </div>) : <p className="codex-extensions-note">No ChatGPT subscription quota reported by the daemon.</p>}
     {typeof limits?.rateLimitResetCredits?.availableCount === "number" ? <p className="codex-extensions-note">Available rate-limit resets: {limits.rateLimitResetCredits.availableCount}</p> : null}
+    </> : <>
     <div className="codex-extension-heading"><h3 className="settings-section-title">Installed Codex plugins</h3><span>{installedPlugins.length} installed</span></div>
     <p className="codex-extensions-note">Read from the daemon's installed-plugin registry. Disabled-plugin preferences saved per conversation are not yet enforced by Codex 0.166.</p>
     {installedPlugins.map(plugin => <div className="codex-plugin-row" key={plugin.id}>
@@ -107,6 +109,7 @@ export default function CodexAccountPlugins({ rpc, visible }: {rpc: RpcClient | 
       <div><strong>{app.runtimeName || app.id}</strong><span>{app.callable ? "Callable" : app.enabled ? "Enabled · not callable" : "Disabled"}</span></div>
       <button className="settings-toggle" type="button" aria-label={`${app.runtimeName || app.id} enabled`} aria-pressed={app.enabled} disabled={!!saving || busy || !rpc || !/^[a-zA-Z0-9_]+$/.test(app.id)} onClick={() => void setEnabled(app)}>{saving === app.id ? "Saving…" : app.enabled ? "On" : "Off"}</button>
     </div>) : <p className="codex-extensions-note">No installed apps returned. Check your connection or refresh.</p>}
+    </>}
     {feedback ? <p className="codex-extension-success" role="status">{feedback}</p> : null}
     {error ? <p className="codex-extension-error" role="alert">{error}</p> : null}
   </div>;

@@ -1,3 +1,8 @@
+import { SharedUploads } from "./shared-uploads.js";
+import { ConversationShares } from "./conversation-shares.js";
+import { SharedConversationGateway } from "./shared-conversation.js";
+import { mountConversationShares } from "./share-routes.js";
+import { ResourceStore, mountResources } from "./resources.js";
 import "dotenv/config";
 import { readSidebarMetadata } from "./sidebar-metadata.js";
 import { createServer } from "node:http";
@@ -17,6 +22,7 @@ import { config } from "./config.js";
 import { daemonAvailable, endpointLabel } from "./daemon.js";
 import { ScheduledTaskScheduler } from "./scheduled-task-scheduler.js";
 import { SubagentReturnLoop } from "./subagent-return-loop.js";
+import { AppServerRpc } from "./app-server-rpc.js";
 import {
   startScheduledTaskControlSocket,
   stopScheduledTaskControlSocket,
@@ -41,8 +47,8 @@ import {
 const app = express();
 const server = createServer(app);
 const scheduledTaskStore = new ScheduledTaskStore(config.scheduledTasksPath);
-const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore);
-const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath);
+const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore,Date.now,AppServerRpc.connect);
+const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath,()=>AppServerRpc.connect());
 
 function originAllowed(origin: string | undefined): boolean {
   return Boolean(origin && config.allowedOrigins.has(origin));
@@ -108,7 +114,22 @@ app.use((_request, response, next) => {
   );
   next();
 });
+// Allow 8,000 Unicode characters in guest messages without enlarging other APIs.
+app.use("/api/shared/messages", express.json({ limit: "64kb", strict: true }));
 app.use(express.json({ limit: "16kb", strict: true }));
+const resourceStore = new ResourceStore(resolve(dirname(config.tokenPath), "resources.json"), config.endpoint.kind === "unix");
+await resourceStore.initialize();
+mountResources(app, resourceStore, requireSession, requireBrowserOrigin);
+const conversationShares = new ConversationShares(resolve(dirname(config.tokenPath),"conversation-shares.json"));
+await conversationShares.initialize();
+const sharedUploads = new SharedUploads(resolve(dirname(config.tokenPath),"shared-uploads.json"),
+  resolve(dirname(config.tokenPath),"..","codex-daemon-web-uploads"),conversationShares,config.endpoint.kind==="unix");
+await sharedUploads.initialize();
+const uploadPruneTimer=setInterval(()=>void sharedUploads.prune().catch(()=>{}),3600_000);
+uploadPruneTimer.unref();
+const sharedConversations = new SharedConversationGateway(conversationShares,undefined,undefined,sharedUploads);
+mountConversationShares(app,conversationShares,sharedConversations,requireSession,requireBrowserOrigin,resourceStore,sharedUploads);
+
 
 app.post(
   "/api/login",
@@ -386,6 +407,7 @@ if (process.env.NODE_ENV !== "development") {
   const clientDirectory = resolve(serverDirectory, "../client");
   const entryFile = resolve(clientDirectory, "index.html");
   if (existsSync(entryFile)) {
+    app.get("/", (_request, response) => { response.setHeader("Cache-Control", "no-store"); response.sendFile(entryFile, { dotfiles: "allow" }); });
     app.use(
       express.static(clientDirectory, {
         index: false,
@@ -400,7 +422,7 @@ if (process.env.NODE_ENV !== "development") {
     );
     app.get("/{*path}", (_request, response, next) => {
       response.setHeader("Cache-Control", "no-store");
-      response.sendFile(entryFile, (error) => {
+      response.sendFile(entryFile, { dotfiles: "allow" }, (error) => {
         if (error) next(error);
       });
     });
@@ -445,6 +467,8 @@ server.listen(config.port, config.host, () => {
 });
 
 function shutdown(): void {
+  clearInterval(uploadPruneTimer);
+  sharedConversations.close();
   scheduledTaskScheduler.stop();
   subagentReturnLoop.stop();
   closeBridge();

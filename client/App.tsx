@@ -1,3 +1,5 @@
+import AppearanceSettings, { useAppearance } from "./AppearanceSettings";
+import SettingsNavigation from "./SettingsNavigation";
 import {
   Archive,
   ArrowUp,
@@ -31,33 +33,32 @@ import {
   X,
 } from "lucide-react";
 import {
-  createContext,
   useContext,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ComponentProps,
   type FormEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import {MarkdownCodeBlock} from "./MarkdownCodeBlock";
 import { RpcClient, type ConnectionState } from "./protocol";
 import ScheduledTasks from "./ScheduledTasks";
+import ConversationSharing from "./ConversationSharing";
+import MessageTimestamp from "./MessageTimestamp";
+import {mergeItemTimestamps} from "./message-time";
 import ThreadGoalPanel from "./ThreadGoalPanel";
-import FileReferenceViewer from "./FileReferenceViewer";
+import { FileReferenceContext, MarkdownContent, LocalResourceImage } from "./ResourceMarkdown";
+import { localReferencePath } from "./resource-paths";
 import {clientUUID} from "./client-uuid";
 import {codexThreadLink,forkAtMessage} from "./conversation-actions";
 import CodexAccountPlugins from "./CodexAccountPlugins";
-import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import ThreadPluginOptions from "./ThreadPluginOptions";
 import SidebarQuota from "./SidebarQuota";
+import { readInterfaceLanguage, setInterfaceLanguage, type InterfaceLanguage } from "./interface-language";
 import type {
   ApprovalPrompt,
   DaemonStatus,
@@ -79,12 +80,8 @@ import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./th
 import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
 import "./styles.css";
 
-type FileReferenceContextValue={
-  client:RpcClient|null;cwd:string;
-  openThread:(threadId:string)=>void;
-};
-const FileReferenceContext=createContext<FileReferenceContextValue|null>(null);
 type OptimisticSubmission = {
+  submittedAtMs:number;
   id:string;
   threadId:string|null;
   kind:"turn"|"steer"|"queue";
@@ -1885,6 +1882,7 @@ export default function App() {
 
 function WorkspaceApp() {
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(readThemeChoice);
+  const [appearance, setAppearance] = useAppearance();
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [statusError, setStatusError] = useState("");
@@ -1893,6 +1891,7 @@ function WorkspaceApp() {
   const [authError, setAuthError] = useState("");
   const [notice, setNotice] = useState<AppNotice | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
+  const [sharingThread,setSharingThread]=useState<ThreadSummary|null>(null);
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [subagentThreads, setSubagentThreads] = useState<ThreadSummary[]>([]);
@@ -2611,7 +2610,12 @@ function WorkspaceApp() {
           .catch(() => {});
       }
       try {
-        const response = await fetch("/", {
+        // The app may be mounted below a navigation homepage (e.g. /codex/).
+        // Fetch the app entrypoint, not the site-wide root, for version checks.
+        const entrypoint = window.location.pathname.startsWith("/codex/")
+          ? "/codex/"
+          : "/";
+        const response = await fetch(entrypoint, {
           cache: "no-store",
           credentials: "same-origin",
         });
@@ -3111,14 +3115,7 @@ function WorkspaceApp() {
           const replacement: TimelineItem = {
             turnId,
             item: next,
-            startedAtMs:
-              typeof params.startedAtMs === "number"
-                ? params.startedAtMs
-                : null,
-            completedAtMs:
-              typeof params.completedAtMs === "number"
-                ? params.completedAtMs
-                : null,
+            ...mergeItemTimestamps(params, current[found]),
             streaming: method === "item/started",
           };
           if (found < 0) return [...current, replacement];
@@ -4391,8 +4388,9 @@ function WorkspaceApp() {
     setComposer("");
     if (composerRef.current) composerRef.current.style.height = "39px";
   };
-  const beginOptimistic=(message:OptimisticSubmission,sourceText:string)=>{
-    setOptimisticMessages(current=>[...current.filter(item=>item.id!==message.id),message]);
+  const beginOptimistic=(message:Omit<OptimisticSubmission,"submittedAtMs">,sourceText:string)=>{
+    const submission={...message,submittedAtMs:Date.now()};
+    setOptimisticMessages(current=>[...current.filter(item=>item.id!==message.id),submission]);
     scrollWasNearBottom.current=true;
     // Acknowledge the click visually before waiting for Codex's RPC response.
     if((composerRef.current?.value??sourceText)===sourceText)clearComposerText();
@@ -5255,7 +5253,7 @@ function WorkspaceApp() {
     invoker: HTMLButtonElement | null,
   ) => {
     const menuWidth = 190;
-    const menuHeight = 96;
+    const menuHeight = 136;
     threadContextMenuInvokerRef.current = invoker;
     setThreadContextMenu({
       thread,
@@ -5328,9 +5326,15 @@ function WorkspaceApp() {
 
   useEffect(() => {
     if (!threadContextMenu) return;
-    const frame = window.requestAnimationFrame(() =>
-      threadContextMenuFirstActionRef.current?.focus(),
-    );
+    const frame = window.requestAnimationFrame(() => {
+      const menu = threadContextMenuRef.current;
+      if (menu) {
+        const bounds = menu.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, Math.min(threadContextMenu.left, window.innerWidth - bounds.width - 8))}px`;
+        menu.style.top = `${Math.max(8, Math.min(threadContextMenu.top, window.innerHeight - bounds.height - 8))}px`;
+      }
+      threadContextMenuFirstActionRef.current?.focus();
+    });
     const handlePointerDown = (event: PointerEvent) => {
       if (!threadContextMenuRef.current?.contains(event.target as Node))
         setThreadContextMenu(null);
@@ -6009,14 +6013,6 @@ function WorkspaceApp() {
                             </>
                           )}
                           {renameId !== thread.id ? (
-                            <button type="button" className="thread-row-action"
-                              aria-label={`Copy Codex thread reference for ${titleFor(thread)}`}
-                              title="Copy Codex thread reference"
-                              onClick={event=>{event.stopPropagation();void copyConversationLink(thread.id);}}>
-                              <Link2 size={13} aria-hidden="true"/>
-                            </button>
-                          ) : null}
-                          {renameId !== thread.id ? (
                             <button
                               type="button"
                               className="thread-row-action"
@@ -6129,6 +6125,23 @@ function WorkspaceApp() {
                 onClick={() => {
                   const { thread } = threadContextMenu;
                   setThreadContextMenu(null);
+                  void copyConversationLink(thread.id);
+                }}
+              >
+                <Link2 size={14} aria-hidden="true" />
+                <span>Copy Codex thread link</span>
+              </button>
+              <button type="button" role="menuitem" onClick={()=>{
+                setSharingThread(threadContextMenu.thread);setThreadContextMenu(null);
+              }}>
+                <Link2 size={14} aria-hidden="true"/><span>Share conversation…</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  const { thread } = threadContextMenu;
+                  setThreadContextMenu(null);
                   void archiveThread(thread);
                 }}
               >
@@ -6139,6 +6152,8 @@ function WorkspaceApp() {
             document.body,
           )
         : null}
+
+      {sharingThread?createPortal(<ConversationSharing threadId={sharingThread.id} title={titleFor(sharingThread)} onClose={()=>setSharingThread(null)}/>,document.body):null}
 
       {archiveConfirmThread ? createPortal(
         <div className="modal-scrim settings-scrim"
@@ -6227,7 +6242,7 @@ function WorkspaceApp() {
       ):null}
 
       <FileReferenceContext.Provider value={{
-        client,cwd:cwd||selectedThread?.cwd||"",
+        cwd:cwd||selectedThread?.cwd||"",threadId:selectedThread?.id,
         openThread:(threadId:string)=>{void navigateToThread(threadId,[],"push");},
       }}>
       <main className="main-panel">
@@ -6270,12 +6285,6 @@ function WorkspaceApp() {
             <ChevronDown size={14} />
           </div>
           <div className="topbar-right">
-            {selectedThread ? <button type="button" className="project-topbar-move"
-              title="Copy Codex thread reference"
-              aria-label="Copy Codex thread reference"
-              onClick={()=>void copyConversationLink(selectedThread.id)}>
-              <Link2 size={15}/> <span>Link</span>
-            </button>:null}
             {selectedThread ? <button type="button" className="project-topbar-move"
               title="Move this conversation to a Codex project"
               aria-label="Move conversation to project"
@@ -6874,7 +6883,7 @@ function WorkspaceApp() {
                 <button
                   type="button"
                   className={`composer-tool ${showOptions ? "active" : ""}`}
-                  title="Model and permission options"
+                  title="Conversation Options"
                   aria-expanded={showOptions}
                   disabled={
                     sending ||
@@ -6887,6 +6896,22 @@ function WorkspaceApp() {
                   <span className="settings-label">Options</span>
                   <ChevronDown size={13} />
                 </button>
+                <select
+                  className="composer-model-select"
+                  aria-label="Model"
+                  title="New choices apply to your next turn."
+                  value={model}
+                  disabled={sending || queueing || selectedThread?.canAcceptDirectInput === false}
+                  onChange={(event) => selectModel(event.target.value)}
+                >
+                  <option value="">Daemon default</option>
+                  {model && !selectedModel ? <option value={model}>{model}</option> : null}
+                  {models.map((entry) => (
+                    <option key={entry.id} value={entry.model}>
+                      {entry.displayName || entry.model}
+                    </option>
+                  ))}
+                </select>
                 {selectedThread ? (
                   <ContextUsageIndicator usage={threadTokenUsage} />
                 ) : null}
@@ -6994,7 +7019,7 @@ function WorkspaceApp() {
                         <div>
                           <strong id="settings-title">{showOptions ? "Conversation Options" : "Global Settings"}</strong>
                           <span>{showOptions
-                            ? "Model, reasoning, permissions, and plugin preferences for this conversation."
+                            ? "Reasoning, permissions, and plugin preferences for this conversation."
                             : "Codex account, usage, installed apps, device preferences, and history."}</span>
                         </div>
                         <button
@@ -7010,22 +7035,6 @@ function WorkspaceApp() {
                       {showOptions ? (<>
                       <h3 className="settings-section-title">Run settings</h3>
                       <div className="settings-grid">
-                        <label>
-                          <span>Model</span>
-                          <select
-                            value={model}
-                            onChange={(event) =>
-                              selectModel(event.target.value)
-                            }
-                          >
-                            <option value="">Daemon default</option>
-                            {models.map((entry) => (
-                              <option key={entry.id} value={entry.model}>
-                                {entry.displayName || entry.model}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
                         <label>
                           <span>Reasoning</span>
                           <select
@@ -7128,7 +7137,10 @@ function WorkspaceApp() {
                         threadId={selectedThread?.id || null} disabledIds={disabledPluginIds}
                         onChange={setDisabledPluginIds} />
                       </>) : (<>
-                      <div className="settings-preferences">
+                      <SettingsNavigation pages={[
+                        { id: "display", title: "Appearance & display", description: "Theme, colors, language, and status markers", icon: <Sun size={20} />, children: [
+                          { id: "style", title: "Style customization", description: "Theme, accent color, selection, and contrast", content: <AppearanceSettings value={appearance} onChange={setAppearance} theme={themeChoice} onThemeChange={value => { setThemeChoice(value); try { localStorage.setItem(themeChoiceKey, value); } catch {} }} /> },
+                          { id: "language", title: "Interface language", content: <>                      <div className="settings-preferences">
                         <div className="settings-preference">
                           <div>
                             <strong>Interface language</strong>
@@ -7144,8 +7156,8 @@ function WorkspaceApp() {
                           </label>
                         </div>
                       </div>
-                      <CodexAccountPlugins rpc={client} visible={showSettings && connection === "online"} />
-                      <div className="settings-preferences">
+</> },
+                          { id: "markers", title: "Conversation status markers", content: <>                      <div className="settings-preferences">
                         <div className="thread-indicator-preference-heading">
                           <div>
                             <h3 className="settings-section-title">Conversation status markers</h3>
@@ -7194,7 +7206,10 @@ function WorkspaceApp() {
                           </div>
                         ))}
                       </div>
-                      <div className="settings-preferences">
+</> },
+                        ]},
+                        { id: "notifications", title: "Notifications & sound", description: "Browser alerts and completion sounds", icon: <CircleHelp size={20} />, children: [
+                          { id: "device", title: "Device notifications", content: <>                      <div className="settings-preferences">
                         <h3 className="settings-section-title">
                           Device preferences
                         </h3>
@@ -7274,7 +7289,14 @@ function WorkspaceApp() {
                           </button>
                         </div>
                       </div>
-                      <div className="settings-history">
+</> },
+                        ]},
+                        { id: "account", title: "Account & extensions", description: "Account, usage, plugins, and connected apps", icon: <Shield size={20} />, children: [
+                          { id: "usage", title: "Codex account & limits", content: <CodexAccountPlugins section="account" rpc={client} visible={showSettings && connection === "online"} /> },
+                          { id: "extensions", title: "Apps & plugins", content: <CodexAccountPlugins section="extensions" rpc={client} visible={showSettings && connection === "online"} /> },
+                        ]},
+                        { id: "history", title: "History & session", description: "Archived conversations and browser login", icon: <Archive size={20} />, children: [
+                          { id: "archive", title: "Archived conversations", content: <>                      <div className="settings-history">
                         <div>
                           <strong>Archived conversations</strong>
                           <span>
@@ -7301,7 +7323,8 @@ function WorkspaceApp() {
                           <ChevronRight size={15} />
                         </button>
                       </div>
-                      <div className="settings-history settings-account">
+</> },
+                          { id: "session", title: "Session", content: <>                      <div className="settings-history settings-account">
                         <div>
                           <strong>Session</strong>
                           <span>Sign out of this browser session.</span>
@@ -7317,6 +7340,9 @@ function WorkspaceApp() {
                           Sign out
                         </button>
                       </div>
+</> },
+                        ]},
+                      ]} />
                       </>)}
                     </section>
                   </div>,
@@ -8004,23 +8030,26 @@ function OptimisticMessageBubble({message,onRestore}:{
   const uncertain=message.status==="unconfirmed";
   return <article className={`message-row user-row optimistic-message ${uncertain?"unconfirmed":""}`}
     aria-label={uncertain?"Message delivery could not be confirmed":"Message submitted"}>
-    <div className="user-message-bubble">
-      {message.input.map((part,index)=>(
-        part.type==="text"?<div className="user-text" key={index}>{part.text}</div>:
-        part.type==="image" && "url" in part ?
-          <div className="optimistic-attachment" key={index}>
-            {safeImageUrl(part.url)?<img src={part.url} alt="Attached image"/>:"Image attachment"}
-          </div>:
-          part.type==="skill" ? <span className="user-chip" key={index}>Skill · {part.name}</span>:
-          part.type==="mention" ? <span className="user-chip" key={index}>@{part.name}</span>:null
-      ))}
-      <div className="optimistic-status" role="status">
-        {uncertain?"Delivery unconfirmed":message.status==="sending"
-          ? message.kind==="queue"?"Queuing…":"Sending…"
-          : "Submitted · syncing…"}
-        {uncertain?<button type="button" onClick={onRestore}>Check and restore draft</button>:null}
+    <div className="user-message-with-actions">
+      <div className="user-message-bubble">
+        {message.input.map((part,index)=>(
+          part.type==="text"?<div className="user-text" key={index}>{part.text}</div>:
+          part.type==="image" && "url" in part ?
+            <div className="optimistic-attachment" key={index}>
+              {safeImageUrl(part.url)?<img src={part.url} alt="Attached image"/>:"Image attachment"}
+            </div>:
+            part.type==="skill" ? <span className="user-chip" key={index}>Skill · {part.name}</span>:
+            part.type==="mention" ? <span className="user-chip" key={index}>@{part.name}</span>:null
+        ))}
+        <div className="optimistic-status" role="status">
+          {uncertain?"Delivery unconfirmed":message.status==="sending"
+            ? message.kind==="queue"?"Queuing…":"Sending…"
+            : "Submitted · syncing…"}
+          {uncertain?<button type="button" onClick={onRestore}>Check and restore draft</button>:null}
+        </div>
+        {uncertain&&message.error?<small className="optimistic-error">{message.error}</small>:null}
       </div>
-      {uncertain&&message.error?<small className="optimistic-error">{message.error}</small>:null}
+      <div className="message-meta"><MessageTimestamp startedAtMs={message.submittedAtMs}/></div>
     </div>
   </article>;
 }
@@ -8049,10 +8078,13 @@ function TimelineCard({
               <UserInputPart key={index} part={part} />
             ))}
           </div>
-          {entry.turnId ? <button type="button" className="message-fork-button"
-            disabled={forkBusy||Boolean(entry.streaming)}
-            title="Fork before this user turn"
-            onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
+          <div className="message-meta">
+            <MessageTimestamp startedAtMs={entry.startedAtMs} completedAtMs={entry.completedAtMs}/>
+            {entry.turnId ? <button type="button" className="message-fork-button"
+              disabled={forkBusy||Boolean(entry.streaming)}
+              title="Fork before this user turn"
+              onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
+          </div>
         </div>
       </article>
     );
@@ -8071,9 +8103,12 @@ function TimelineCard({
             </div>
           ) : null}
           <MarkdownContent text={text} />
-          {entry.turnId && !entry.streaming ? <button type="button" className="message-fork-button"
-            disabled={forkBusy} title="Fork through this completed assistant turn"
-            onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
+          <div className="message-meta">
+            <MessageTimestamp startedAtMs={entry.startedAtMs} completedAtMs={entry.completedAtMs}/>
+            {entry.turnId && !entry.streaming ? <button type="button" className="message-fork-button"
+              disabled={forkBusy} title="Fork through this completed assistant turn"
+              onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
+          </div>
           {item.delivery === "failed" ? (
             <p className="delivery-error">
               This response could not be delivered.
@@ -8323,7 +8358,6 @@ function TimelineCard({
 
 function UserInputPart({ part }: { part: Record<string, unknown> }) {
   const context=useContext(FileReferenceContext);
-  const [preview,setPreview]=useState<string|null>(null);
   if (part.type === "text")
     return <div className="user-text">{asString(part.text)}</div>;
   if (part.type === "image") {
@@ -8339,13 +8373,7 @@ function UserInputPart({ part }: { part: Record<string, unknown> }) {
   if (part.type === "localImage"){
     const path=asString(part.path);
     const fullPath=path&&context?localReferencePath(path,context.cwd):null;
-    if(fullPath&&context?.client)return <>
-      <button type="button" className="markdown-local-link" onClick={()=>setPreview(fullPath)}>
-        Image · {path.split("/").at(-1)}
-      </button>
-      {preview?<FileReferenceViewer client={context.client} path={preview}
-        onClose={()=>setPreview(null)}/>:null}
-    </>;
+    if(fullPath&&context)return <LocalResourceImage path={fullPath} alt={path.split("/").at(-1)||"Attached image"} scope={context}/>;
     return <span className="unsupported-attachment">Image · {path.split("/").at(-1)}</span>;
   }
   if (part.type === "audio" || part.type === "localAudio")
@@ -8602,84 +8630,6 @@ function SubAgentActivity({
       ) : null}
     </div>
   );
-}
-
-function MarkdownContent({ text }: { text: string }) {
-  return (
-    <div className="markdown-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={safeMarkdownUrl}
-        components={{
-          a: MarkdownLink,
-          img: MarkdownImage,
-          pre: MarkdownCodeBlock,
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function localReferencePath(href:string,cwd:string):string|null {
-  let path=href.trim();
-  if(!path)return null;
-  if(/^file:\/\//i.test(path)){
-    try{const u=new URL(path);if(u.hostname&&u.hostname!=="localhost")return null;path=decodeURIComponent(u.pathname);}
-    catch{return null;}
-  }else if(/^[a-z][a-z0-9+.-]*:/i.test(path))return null;
-  else{
-    path=path.split("#")[0].split("?")[0];
-    try{path=decodeURIComponent(path);}catch{return null;}
-  }
-  if(path.startsWith("/") && !path.startsWith("//"))return path;
-  if(!cwd.startsWith("/")||path.startsWith("/")||path.includes("\\")||path.includes("\0"))return null;
-  const elements=(cwd+"/"+path).split("/");
-  const stack:string[]=[];
-  for(const element of elements){if(!element||element===".")continue;if(element==="..")stack.pop();else stack.push(element);}
-  return "/"+stack.join("/");
-}
-function safeMarkdownUrl(value:string):string{
-  if(!value.trim())return "";
-  if(/^codex:\/\/threads\/[a-f0-9-]{20,}$/i.test(value))return value;
-  if(/^file:\/\//i.test(value)||value.startsWith("/")||value.startsWith("./")||value.startsWith("../"))return value;
-  try{const url=new URL(value);return ["http:","https:"].includes(url.protocol)?url.href:"";}
-  catch{return (/^[\w.-]+\/[\w./-]+$/.test(value)||
-    /^[\w.-]+\.(?:md|txt|pdf|png|jpg|jpeg|webp|svg|json|csv|py|ts|tsx|js|log|yaml|yml)$/i.test(value))?value:"";}
-}
-function MarkdownLink({href,children}:ComponentProps<"a">){
-  const context=useContext(FileReferenceContext);
-  const [file,setFile]=useState<string|null>(null);
-  const value=href||"";
-  const threadId=value.match(/^codex:\/\/threads\/([a-f0-9-]{20,})/i)?.[1];
-  if(threadId && context)
-    return <button type="button" className="markdown-local-link" onClick={()=>context.openThread(threadId)}>{children}</button>;
-  const web=/^https?:\/\//i.test(value) ? safeMarkdownUrl(value):"";
-  if(web)return <a href={web} target="_blank" rel="noopener noreferrer">{children}</a>;
-  const path=context?localReferencePath(value,context.cwd):null;
-  if(path && context?.client)return <>
-    <button type="button" className="markdown-local-link" title={path}
-      onClick={()=>setFile(path)}>{children}</button>
-    {file?<FileReferenceViewer client={context.client} path={file} onClose={()=>setFile(null)}/>:null}
-  </>;
-  return <span title={value||undefined}>{children}</span>;
-}
-function MarkdownImage({src,alt}:ComponentProps<"img">){
-  const context=useContext(FileReferenceContext);
-  const [file,setFile]=useState<string|null>(null);
-  const url=safeImageUrl(src);
-  if(url)return <a href={url} target="_blank" rel="noopener noreferrer">
-    <img src={url} alt={alt||"Embedded image"} className="markdown-embedded-image" loading="lazy" referrerPolicy="no-referrer"/>
-  </a>;
-  const path=src&&context?localReferencePath(src,context.cwd):null;
-  if(path&&context?.client)return <>
-    <button type="button" className="markdown-local-link" onClick={()=>setFile(path)}>
-      Preview image: {alt||path.split("/").at(-1)}
-    </button>
-    {file?<FileReferenceViewer client={context.client} path={file} onClose={()=>setFile(null)}/>:null}
-  </>;
-  return <span title={src||undefined}>{alt||"Image reference"}</span>;
 }
 
 function ApprovalDialog({
@@ -9538,7 +9488,8 @@ function mergeHistoryWithLive(
 ): TimelineItem[] {
   const byId = new Map(history.map((entry) => [entry.item.id, entry]));
   for (const entry of live)
-    if (liveIds.has(entry.item.id)) byId.set(entry.item.id, entry);
+    if (liveIds.has(entry.item.id))
+      byId.set(entry.item.id, {...entry,...mergeItemTimestamps(entry,byId.get(entry.item.id))});
   return Array.from(byId.values()).sort(
     (a, b) => (a.startedAtMs ?? 0) - (b.startedAtMs ?? 0),
   );

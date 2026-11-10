@@ -78,6 +78,23 @@ command = "node"
 args = ["/absolute/path/to/codex-daemon-web/dist/server/user-interactions-mcp.js"]
 ```
 
+For MCP sameChat creation, omit the target to bind the calling daemon conversation
+from MCP transport metadata (threadId, thread_id, or a UUID-valued session_id). The model
+does not supply its own current-thread ID. If this metadata is unavailable, creation
+fails immediately and asks for a Codex Link. To choose a conversation explicitly,
+pass conversationLink: "codex://threads/<UUID>". Application conv_ IDs are
+not daemon thread IDs and are never rewritten into UUIDs. The old MCP threadId
+argument is rejected with instructions to use the new fields.
+
+get_scheduled_task_context verifies the caller identity without creating or
+executing a task. Partial updates preserve the existing conversation; use
+conversationLink or useCurrentConversation: true to rebind explicitly.
+Both the WebUI and MCP validate same-chat targets with read-only thread/read
+before creating/updating tasks, resuming/restoring them, or requesting an immediate
+run. Validation does not resume the conversation or start a turn. Failed checks
+leave the saved task unchanged. Reload the MCP configuration after upgrading the
+tool schema; a caller with an old schema receives a clear validation error.
+
 The scheduled-task server exposes task-management tools. The `user_interactions` server exposes `ask_user`; its configured name must match for scheduled question handoff to work. Start or restart the Codex app-server after changing its MCP configuration. When customizing `XDG_STATE_HOME`, `CODEX_WEB_TOKEN_FILE`, or `CODEX_WEB_TASKS_SOCKET_FILE`, make sure the Codex-launched MCP process and web service use the same task socket path.
 
 ## Docker with a host app-server

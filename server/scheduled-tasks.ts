@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { Temporal } from "@js-temporal/polyfill";
+import { daemonThreadId, verifyDaemonThread } from "./scheduled-task-target.js";
 
 export type TaskMode = "sameChat" | "newChat";
 export type TaskWeekday = "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU";
@@ -184,9 +185,11 @@ function normalizeInput(value: ScheduledTaskInput) {
   if (value.mode !== "sameChat" && value.mode !== "newChat")
     return fail("Choose same chat or new chat for each run");
   const mode: TaskMode = value.mode;
-  const threadId = optionalString(value.threadId, "Thread id", 256);
-  if (mode === "sameChat" && !threadId)
-    return fail("A conversation is required for same-chat runs");
+  let threadId: string | null = null;
+  if (mode === "sameChat") {
+    try { threadId = daemonThreadId(value.threadId); }
+    catch (error) { return fail(error instanceof Error ? error.message : "Invalid daemon conversation ID"); }
+  }
   const rawCwd = optionalString(value.cwd, "Working directory", 2048);
   if (rawCwd && !isAbsolute(rawCwd))
     return fail("Working directory must be an absolute path");
@@ -295,7 +298,19 @@ export class ScheduledTaskStore {
   constructor(
     private readonly filePath: string,
     private readonly now: () => number = Date.now,
+    private readonly verifyThread: (id:string)=>Promise<void> = verifyDaemonThread,
   ) {}
+
+  async validateThreadId(value:unknown):Promise<string> {
+    try {
+      const id=daemonThreadId(value);
+      await this.verifyThread(id);
+      return id;
+    } catch(error) {
+      throw new TaskValidationError("Cannot use this scheduled-task conversation: "+
+        (error instanceof Error ? error.message : "daemon verification failed"));
+    }
+  }
 
   initialize(): Promise<void> {
     this.initialized ??= this.load();
@@ -390,6 +405,7 @@ export class ScheduledTaskStore {
 
   async create(input: ScheduledTaskInput): Promise<ScheduledTask> {
     const normalized = normalizeInput(input);
+    if(normalized.mode==="sameChat")await this.validateThreadId(normalized.sourceThreadId);
     const createdAt = this.now();
     const task: ScheduledTask = {
       ...normalized,
@@ -417,6 +433,7 @@ export class ScheduledTaskStore {
 
   async update(id: string, input: ScheduledTaskInput): Promise<ScheduledTask> {
     const normalized = normalizeInput(input);
+    if(normalized.mode==="sameChat")await this.validateThreadId(normalized.sourceThreadId);
     return this.mutate(() => {
       const task = this.data.tasks.find((entry) => entry.id === id);
       if (!task) throw new TaskNotFoundError();
@@ -440,9 +457,10 @@ export class ScheduledTaskStore {
     id: string,
     status: "active" | "paused" | "archived",
   ): Promise<ScheduledTask> {
-    return this.mutate(() => {
+    return this.mutate(async () => {
       const task = this.data.tasks.find((entry) => entry.id === id);
       if (!task) throw new TaskNotFoundError();
+      if(status==="active" && task.mode==="sameChat")await this.validateThreadId(task.sourceThreadId);
       task.status = status;
       task.updatedAt = this.now();
       if (status !== "active") {
@@ -480,11 +498,12 @@ export class ScheduledTaskStore {
   }
 
   async requestRunNow(id: string): Promise<ScheduledTask> {
-    return this.mutate(() => {
+    return this.mutate(async () => {
       const task = this.data.tasks.find((entry) => entry.id === id);
       if (!task) throw new TaskNotFoundError();
       if (task.status === "archived")
         return fail("Archived tasks cannot be run");
+      if(task.mode==="sameChat")await this.validateThreadId(task.sourceThreadId);
       task.pendingManualRun = true;
       task.manualRunNotBefore = null;
       task.updatedAt = this.now();

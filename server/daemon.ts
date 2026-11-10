@@ -23,7 +23,9 @@ function socketOptions(): WebSocket.ClientOptions {
   return {
     headers,
     handshakeTimeout: config.connectTimeoutMs,
-    maxPayload: config.maxPayloadBytes,
+    // Resuming a long thread returns its history in one frame. Keep this
+    // trusted daemon response limit separate from inbound browser messages.
+    maxPayload: Math.max(config.maxPayloadBytes, 64 * 1024 * 1024),
     perMessageDeflate: false,
   };
 }

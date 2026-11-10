@@ -4,7 +4,7 @@ import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 
 /** Render only explicitly fenced diagrams, with active SVG content removed. */
-function sanitizeSvg(source:string):string {
+export function sanitizeSvg(source:string):string {
   const cleaned=DOMPurify.sanitize(source,{
     USE_PROFILES:{svg:true,svgFilters:true},
     FORBID_TAGS:["script","foreignObject","iframe","object","embed","image","use","a","style"],

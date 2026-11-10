@@ -10,6 +10,7 @@ import {
 } from "./auth.js";
 import { config } from "./config.js";
 import { connectDaemon } from "./daemon.js";
+import { sessionExpiryDelay } from "./session-expiry-delay.js";
 import { notifyUserInput } from "./push.js";
 import { claimThreadWriter, releaseThreadWriter, releaseThreadWriterFor, BridgeRpcRejectedError, type ThreadOwner } from "./bridge-owner.js";
 
@@ -60,6 +61,7 @@ function observeUserInputRequest(text: string): void {
     notifiedRequests.delete(oldest);
   }
   notifyUserInput(threadId);
+
 }
 
 function sendBridgeMessage(
@@ -248,13 +250,22 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
     browserHeartbeatCleanup();
     return;
   }
-  sessionExpiryTimer = setTimeout(
-    () => {
-      if (!isSessionActive(sessionId)) closeForRevocation();
-    },
-    Math.max(1, expiry - Date.now() + 1),
-  );
-  sessionExpiryTimer.unref();
+  const checkSessionExpiry = () => {
+    const currentExpiry = sessionExpiresAt(sessionId);
+    if (currentExpiry === undefined) {
+      closeForRevocation();
+      return;
+    }
+    // Renewals can extend the expiration beyond this timer's interval.
+    // Re-arm rather than passing a 180-day duration to Node's setTimeout,
+    // which would overflow to a 1 ms timer.
+    sessionExpiryTimer = setTimeout(
+      checkSessionExpiry,
+      sessionExpiryDelay(currentExpiry, Date.now()),
+    );
+    sessionExpiryTimer.unref();
+  };
+  checkSessionExpiry();
 
   const sessionIsValid = () => {
     if (sessionRevoked) return false;

@@ -7,7 +7,8 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "./config.js";
-import type { ScheduledTask, ScheduledTaskInput } from "./scheduled-tasks.js";
+import type { ScheduledTask } from "./scheduled-tasks.js";
+import { currentDaemonThreadId, scheduledTaskInput } from "./scheduled-task-target.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -44,10 +45,15 @@ const taskProperties = {
     description:
       "Continue one conversation, or start a new conversation for every run.",
   },
-  threadId: {
+  conversationLink: {
     type: "string",
     description:
-      "Conversation id for sameChat. If omitted, the current MCP session id is used when available.",
+      "For an explicitly chosen target: codex://threads/<UUID>. Omit when creating a sameChat task for the current conversation; the transport identifies it automatically. Never pass an application conv_ ID.",
+  },
+  useCurrentConversation: {
+    type: "boolean",
+    description:
+      "For updates, true explicitly rebinds the task to this calling conversation. Otherwise updates keep the saved target. Cannot be combined with conversationLink.",
   },
   cwd: {
     type: "string",
@@ -71,6 +77,11 @@ const taskProperties = {
 
 const tools: Tool[] = [
   {
+    name: "get_scheduled_task_context",
+    description: "Read and verify this MCP call's current daemon conversation and Codex Link without changing or starting a task. Returns an error when caller identity is unavailable.",
+    inputSchema: {type:"object", properties:{}, additionalProperties:false},
+  },
+  {
     name: "list_scheduled_tasks",
     description: "List scheduled tasks. Include archived tasks when requested.",
     inputSchema: {
@@ -93,7 +104,7 @@ const tools: Tool[] = [
   {
     name: "create_scheduled_task",
     description:
-      "Create a recurring task. SameChat continues the current conversation; newChat starts a fresh conversation each run. Task runs use the daemon's current permission settings and cannot answer approval or input requests. Specify threadId if current session metadata is unavailable.",
+      "Create a recurring task. SameChat continues the current conversation; newChat starts a fresh conversation each run. Task runs use the daemon's current permission settings and cannot answer approval or input requests. Do not supply a thread ID: current conversation comes from transport metadata. Use conversationLink only for an explicitly selected conversation or when current identity is unavailable. The daemon verifies the target before saving.",
     inputSchema: {
       type: "object",
       properties: taskProperties,
@@ -104,7 +115,7 @@ const tools: Tool[] = [
   {
     name: "update_scheduled_task",
     description:
-      "Update task instructions, recurrence, destination, project, model, or reasoning effort. Existing run history and conversation links are retained. Supply every task field that should remain unchanged.",
+      "Update task instructions, recurrence, destination, project, model, or reasoning effort. Existing run history and conversation links are retained. Omitted fields and the existing destination are preserved. Use conversationLink to choose another conversation, or useCurrentConversation=true to explicitly rebind to the caller. The daemon verifies the target before saving.",
     inputSchema: {
       type: "object",
       properties: { taskId: { type: "string" }, ...taskProperties },
@@ -142,7 +153,7 @@ const tools: Tool[] = [
 ];
 
 const server = new Server(
-  { name: "codex-scheduled-tasks", version: "0.1.0" },
+  { name: "codex-scheduled-tasks", version: "0.2.0" },
   {
     capabilities: { tools: { listChanged: false } },
     instructions:
@@ -181,6 +192,8 @@ async function callTaskControl(
 ): Promise<unknown> {
   const meta = isRecord(metadata) ? metadata : {};
   const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+  if (name === "get_scheduled_task_context")
+    return control({operation:"validateThread", id:currentDaemonThreadId(meta)});
   if (name === "list_scheduled_tasks") {
     const tasks = (
       await control<ScheduledTask[]>({
@@ -193,7 +206,7 @@ async function callTaskControl(
   if (name === "get_scheduled_task")
     return control({ operation: "get", id: requireId(taskId) });
   if (name === "create_scheduled_task") {
-    const input = taskInput(args, meta);
+    const input = scheduledTaskInput(args, meta);
     return control({ operation: "create", task: input });
   }
   if (name === "update_scheduled_task") {
@@ -201,20 +214,7 @@ async function callTaskControl(
       operation: "get",
       id: requireId(taskId),
     });
-    const input = taskInput(
-      {
-        name: args.name ?? existing.name,
-        prompt: args.prompt ?? existing.prompt,
-        mode: args.mode ?? existing.mode,
-        threadId: args.threadId ?? existing.sourceThreadId,
-        cwd: args.cwd ?? existing.cwd,
-        timezone: args.timezone ?? existing.timezone,
-        schedule: args.schedule ?? existing.schedule,
-        model: args.model ?? existing.model,
-        reasoningEffort: args.reasoningEffort ?? existing.reasoningEffort,
-      },
-      meta,
-    );
+    const input = scheduledTaskInput(args, meta, existing);
     return control({ operation: "update", id: requireId(taskId), task: input });
   }
   const operations: Record<string, string> = {
@@ -227,23 +227,6 @@ async function callTaskControl(
   const operation = operations[name];
   if (!operation) throw new Error("Unsupported scheduled task tool");
   return control({ operation, id: requireId(taskId) });
-}
-
-function taskInput(args: JsonRecord, metadata: JsonRecord): ScheduledTaskInput {
-  const sessionThreadId =
-    stringOrUndefined(metadata.session_id) ??
-    stringOrUndefined(metadata.thread_id);
-  return {
-    name: args.name,
-    prompt: args.prompt,
-    mode: args.mode,
-    threadId: stringOrUndefined(args.threadId) ?? sessionThreadId,
-    cwd: stringOrUndefined(args.cwd) ?? stringOrUndefined(metadata.cwd),
-    timezone: args.timezone,
-    schedule: args.schedule,
-    model: args.model,
-    reasoningEffort: args.reasoningEffort,
-  };
 }
 
 async function control<T = unknown>(body: JsonRecord): Promise<T> {
@@ -332,10 +315,6 @@ function taskIdSchema(): Tool["inputSchema"] {
 function requireId(value: string | undefined): string {
   if (!value) throw new Error("taskId is required");
   return value;
-}
-
-function stringOrUndefined(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
