@@ -4738,7 +4738,7 @@ html[data-keyboard-visible="true"] .composer-wrap {
   max-width:100%;overflow-x:auto;
   padding:12px;background:#fff;color:#222;text-align:center;
 }
-.markdown-diagram svg {display:block;max-width:100%;height:auto;margin:0 auto;}
+.markdown-diagram svg,.markdown-diagram > img {display:block;max-width:100%;height:auto;margin:0 auto;}
 .markdown-diagram-loading,.markdown-diagram-error {
   display:block;padding:12px;color:var(--muted);font-size:11px;
 }

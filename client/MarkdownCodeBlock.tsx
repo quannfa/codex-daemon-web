@@ -3,17 +3,17 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 
-/** Render only explicitly fenced diagrams, with active SVG content removed. */
-export function sanitizeSvg(source:string):string {
+function cleanDiagramSvg(source:string,asImage=false):SVGSVGElement {
   const cleaned=DOMPurify.sanitize(source,{
     USE_PROFILES:{svg:true,svgFilters:true},
-    FORBID_TAGS:["script","foreignObject","iframe","object","embed","image","use","a","style"],
+    FORBID_TAGS:["script","foreignObject","iframe","object","embed","image","use","a",...(asImage?[]:["style"])],
     FORBID_ATTR:["href","xlink:href"],
     ALLOW_DATA_ATTR:false,
   });
-  if(!/<svg[\s>]/i.test(cleaned))throw new Error("The code does not contain a valid SVG element.");
   const holder=document.createElement("div");
   holder.innerHTML=cleaned;
+  const svg=holder.querySelector("svg");
+  if(!svg)throw new Error("The code does not contain a valid SVG element.");
   for(const element of holder.querySelectorAll("*")){
     for(const attr of Array.from(element.attributes)){
       const value=attr.value;
@@ -23,7 +23,30 @@ export function sanitizeSvg(source:string):string {
         element.removeAttribute(attr.name);
     }
   }
-  return holder.innerHTML;
+  return svg;
+}
+
+/** Inline SVG previews must not introduce styles into the surrounding page. */
+export function sanitizeSvg(source:string):string {
+  return cleanDiagramSvg(source).outerHTML;
+}
+
+/** Keep Mermaid's stylesheet only in an SVG image, never in the page DOM. */
+export function mermaidSvgImage(source:string):{src:string;width?:number;height?:number} {
+  const svg=cleanDiagramSvg(source,true);
+  const bounds=svg.viewBox.baseVal;
+  const width=bounds?.width,height=bounds?.height;
+  const sized=Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0;
+  svg.setAttribute("xmlns","http://www.w3.org/2000/svg");
+  if(sized){
+    // Mermaid emits width="100%". Give the image intrinsic dimensions so
+    // responsive sizing preserves the diagram's actual aspect ratio.
+    svg.setAttribute("width",String(width));
+    svg.setAttribute("height",String(height));
+  }
+  const serialized=new XMLSerializer().serializeToString(svg);
+  return {src:"data:image/svg+xml;charset=utf-8,"+encodeURIComponent(serialized),
+    ...(sized?{width,height}:{})};
 }
 
 let mermaidModule:Promise<(typeof import("mermaid"))["default"]>|undefined;
@@ -44,23 +67,26 @@ function getMermaid(){
 let diagramSerial=0;
 function MermaidDiagram({source}:{source:string}){
   const id=useId().replace(/[^a-zA-Z0-9_-]/g,"");
-  const [rendered,setRendered]=useState("");
+  const [rendered,setRendered]=useState<ReturnType<typeof mermaidSvgImage>|null>(null);
   const [error,setError]=useState("");
   useEffect(()=>{
     let canceled=false;
     const timeout=setTimeout(()=>{
       void getMermaid().then(async mermaid=>{
         const result=await mermaid.render("codex-mermaid-"+id+"-"+(++diagramSerial),source);
-        if(!canceled){setRendered(sanitizeSvg(result.svg));setError("");}
+        if(!canceled){setRendered(mermaidSvgImage(result.svg));setError("");}
       }).catch(reason=>{
-        if(!canceled){setRendered("");setError(reason instanceof Error?reason.message:"Invalid Mermaid diagram.");}
+        if(!canceled){setRendered(null);setError(reason instanceof Error?reason.message:"Invalid Mermaid diagram.");}
       });
     },200);
     return ()=>{canceled=true;clearTimeout(timeout);};
   },[source,id]);
   return <>
-    {rendered?<div className="markdown-diagram" role="img" aria-label="Mermaid diagram"
-      dangerouslySetInnerHTML={{__html:rendered}}/>:null}
+    {rendered?<div className="markdown-diagram">
+      <img {...rendered} alt="Mermaid diagram" onError={()=>{
+        setRendered(null);setError("Could not load the Mermaid diagram.");
+      }}/>
+    </div>:null}
     {error?<small className="markdown-diagram-error">Diagram preview unavailable: {error}</small>:null}
     {!rendered&&!error?<small className="markdown-diagram-loading">Rendering Mermaid diagram…</small>:null}
   </>;
