@@ -4735,10 +4735,53 @@ html[data-keyboard-visible="true"] .composer-wrap {
   font:inherit;white-space:pre;
 }
 .markdown-diagram {
-  max-width:100%;overflow-x:auto;
-  padding:12px;background:#fff;color:#222;text-align:center;
+  max-width:100%;overflow:visible;
+  padding:0;background:transparent;color:#222;text-align:center;
 }
-.markdown-diagram svg,.markdown-diagram > img {display:block;max-width:100%;height:auto;margin:0 auto;}
+.markdown-diagram > svg,.markdown-diagram > img {display:block;max-width:100%;height:auto;margin:0 auto;}
+.markdown-diagram .react-mermaid-wrapper {width:100%;max-width:100%;height:clamp(240px,36vw,360px);}
+.markdown-diagram .react-mermaid-wrapper {
+  --mermaid-bg:var(--surface-raised);
+  --mermaid-border-color:var(--border);
+  --mermaid-toolbar-bg:color-mix(in srgb,var(--surface-raised) 92%,transparent);
+  --mermaid-toolbar-border:var(--border);
+  --mermaid-toolbar-color:var(--ink);
+  --mermaid-toolbar-hover-bg:var(--surface-hover);
+  --mermaid-toolbar-focus-ring:var(--focus-ring);
+  --mermaid-fullscreen-bg:var(--surface-raised);
+}
+.react-mermaid-wrapper {
+  position:relative;overflow:hidden;box-sizing:border-box;
+  background:var(--mermaid-bg);border:1px solid var(--mermaid-border-color);
+  border-radius:8px;
+}
+.react-mermaid-wrapper .react-transform-wrapper {width:100%;height:100%;overflow:hidden;}
+.react-mermaid-wrapper .react-transform-component {
+  width:100%;height:100%;display:flex;align-items:flex-start;justify-content:flex-start;
+}
+.react-mermaid-wrapper .react-transform-component svg {max-width:none;}
+.react-mermaid-toolbar {position:absolute;z-index:10;display:flex;gap:4px;}
+.react-mermaid-toolbar--top {top:8px;right:8px;align-items:center;}
+.react-mermaid-toolbar--bottom {bottom:8px;right:8px;}
+.react-mermaid-toolbar button {
+  display:flex;align-items:center;justify-content:center;
+  width:30px;height:30px;padding:0;border:1px solid var(--mermaid-toolbar-border);
+  border-radius:6px;background:var(--mermaid-toolbar-bg);backdrop-filter:blur(4px);
+  color:var(--mermaid-toolbar-color);cursor:pointer;line-height:1;
+}
+.react-mermaid-toolbar button:hover {background:var(--mermaid-toolbar-hover-bg);}
+.react-mermaid-toolbar button:focus-visible {outline:2px solid var(--mermaid-toolbar-focus-ring);outline-offset:2px;}
+.react-mermaid-grid {display:grid;grid-template-columns:repeat(3,30px);grid-template-rows:repeat(3,30px);gap:3px;}
+.react-mermaid-grid > span {display:block;}
+.react-mermaid-error {
+  padding:12px 16px;border:1px solid var(--border-danger);border-radius:6px;
+  color:var(--text-danger);background:var(--surface-danger);font:11px/1.5 var(--mono);
+  overflow-wrap:anywhere;
+}
+.react-mermaid-fullscreen {
+  position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;
+  z-index:9998;background:var(--mermaid-fullscreen-bg);border:0;border-radius:0;
+}
 .markdown-diagram-loading,.markdown-diagram-error {
   display:block;padding:12px;color:var(--muted);font-size:11px;
 }

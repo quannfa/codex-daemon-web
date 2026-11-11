@@ -2,7 +2,7 @@ import {useContext,useEffect,useState} from "react";
 import {createPortal} from "react-dom";
 import DOMPurify from "dompurify";
 import { FileReferenceContext, MarkdownContent } from "./ResourceMarkdown";
-import { sanitizeSvg } from "./MarkdownCodeBlock";
+import { sanitizeSvg } from "./diagramSvg";
 import { resourceUrl,useResourceUrl,useResource,readResourceText,type ResourceScope } from "./resources";
 const MAX_TEXT=5_000_000;
 export default function FileReferenceViewer({path,scope={},onClose}:{path:string;scope?:ResourceScope;onClose:()=>void}) {

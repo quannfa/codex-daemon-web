@@ -1,96 +1,11 @@
-import {isValidElement,useEffect,useId,useState,type ReactNode} from "react";
+import {isValidElement,useState,type ReactNode} from "react";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
+import MermaidDiagram from "./MermaidDiagram";
+import {sanitizeSvg} from "./diagramSvg";
 import "highlight.js/styles/github-dark.css";
 
-function cleanDiagramSvg(source:string,asImage=false):SVGSVGElement {
-  const cleaned=DOMPurify.sanitize(source,{
-    USE_PROFILES:{svg:true,svgFilters:true},
-    FORBID_TAGS:["script","foreignObject","iframe","object","embed","image","use","a",...(asImage?[]:["style"])],
-    FORBID_ATTR:["href","xlink:href"],
-    ALLOW_DATA_ATTR:false,
-  });
-  const holder=document.createElement("div");
-  holder.innerHTML=cleaned;
-  const svg=holder.querySelector("svg");
-  if(!svg)throw new Error("The code does not contain a valid SVG element.");
-  for(const element of holder.querySelectorAll("*")){
-    for(const attr of Array.from(element.attributes)){
-      const value=attr.value;
-      const urls=[...value.matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/gi)];
-      if(urls.some(match=>!match[1].trim().startsWith("#")) ||
-         /@import|expression\s*\(|javascript\s*:/i.test(value))
-        element.removeAttribute(attr.name);
-    }
-  }
-  return svg;
-}
-
-/** Inline SVG previews must not introduce styles into the surrounding page. */
-export function sanitizeSvg(source:string):string {
-  return cleanDiagramSvg(source).outerHTML;
-}
-
-/** Keep Mermaid's stylesheet only in an SVG image, never in the page DOM. */
-export function mermaidSvgImage(source:string):{src:string;width?:number;height?:number} {
-  const svg=cleanDiagramSvg(source,true);
-  const bounds=svg.viewBox.baseVal;
-  const width=bounds?.width,height=bounds?.height;
-  const sized=Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0;
-  svg.setAttribute("xmlns","http://www.w3.org/2000/svg");
-  if(sized){
-    // Mermaid emits width="100%". Give the image intrinsic dimensions so
-    // responsive sizing preserves the diagram's actual aspect ratio.
-    svg.setAttribute("width",String(width));
-    svg.setAttribute("height",String(height));
-  }
-  const serialized=new XMLSerializer().serializeToString(svg);
-  return {src:"data:image/svg+xml;charset=utf-8,"+encodeURIComponent(serialized),
-    ...(sized?{width,height}:{})};
-}
-
-let mermaidModule:Promise<(typeof import("mermaid"))["default"]>|undefined;
-function getMermaid(){
-  if(!mermaidModule)mermaidModule=import("mermaid").then(({default:mermaid})=>{
-    mermaid.initialize({
-      startOnLoad:false,
-      securityLevel:"strict",
-      theme:"default",
-      htmlLabels:false,
-      flowchart:{htmlLabels:false},
-      suppressErrorRendering:true,
-    });
-    return mermaid;
-  });
-  return mermaidModule;
-}
-let diagramSerial=0;
-function MermaidDiagram({source}:{source:string}){
-  const id=useId().replace(/[^a-zA-Z0-9_-]/g,"");
-  const [rendered,setRendered]=useState<ReturnType<typeof mermaidSvgImage>|null>(null);
-  const [error,setError]=useState("");
-  useEffect(()=>{
-    let canceled=false;
-    const timeout=setTimeout(()=>{
-      void getMermaid().then(async mermaid=>{
-        const result=await mermaid.render("codex-mermaid-"+id+"-"+(++diagramSerial),source);
-        if(!canceled){setRendered(mermaidSvgImage(result.svg));setError("");}
-      }).catch(reason=>{
-        if(!canceled){setRendered(null);setError(reason instanceof Error?reason.message:"Invalid Mermaid diagram.");}
-      });
-    },200);
-    return ()=>{canceled=true;clearTimeout(timeout);};
-  },[source,id]);
-  return <>
-    {rendered?<div className="markdown-diagram">
-      <img {...rendered} alt="Mermaid diagram" onError={()=>{
-        setRendered(null);setError("Could not load the Mermaid diagram.");
-      }}/>
-    </div>:null}
-    {error?<small className="markdown-diagram-error">Diagram preview unavailable: {error}</small>:null}
-    {!rendered&&!error?<small className="markdown-diagram-loading">Rendering Mermaid diagram…</small>:null}
-  </>;
-}
+export {sanitizeSvg};
 function SvgDiagram({source}:{source:string}){
   const result=(()=>{
     try {return {svg:sanitizeSvg(source),error:""};}
