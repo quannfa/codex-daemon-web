@@ -4739,8 +4739,7 @@ html[data-keyboard-visible="true"] .composer-wrap {
   padding:0;background:transparent;color:#222;text-align:center;
 }
 .markdown-diagram > svg,.markdown-diagram > img {display:block;max-width:100%;height:auto;margin:0 auto;}
-.markdown-diagram .react-mermaid-wrapper {width:100%;max-width:100%;height:clamp(240px,36vw,360px);}
-.markdown-diagram .react-mermaid-wrapper {
+.react-mermaid-wrapper {
   --mermaid-bg:var(--surface-raised);
   --mermaid-border-color:var(--border);
   --mermaid-toolbar-bg:color-mix(in srgb,var(--surface-raised) 92%,transparent);
@@ -4749,15 +4748,14 @@ html[data-keyboard-visible="true"] .composer-wrap {
   --mermaid-toolbar-hover-bg:var(--surface-hover);
   --mermaid-toolbar-focus-ring:var(--focus-ring);
   --mermaid-fullscreen-bg:var(--surface-raised);
-}
-.react-mermaid-wrapper {
   position:relative;overflow:hidden;box-sizing:border-box;
+  width:100%;max-width:100%;height:clamp(240px,36vw,360px);
   background:var(--mermaid-bg);border:1px solid var(--mermaid-border-color);
   border-radius:8px;
 }
 .react-mermaid-wrapper .react-transform-wrapper {width:100%;height:100%;overflow:hidden;}
 .react-mermaid-wrapper .react-transform-component {
-  width:100%;height:100%;display:flex;align-items:flex-start;justify-content:flex-start;
+  width:fit-content;height:fit-content;display:flex;align-items:flex-start;justify-content:flex-start;
 }
 .react-mermaid-wrapper .react-transform-component svg {max-width:none;}
 .react-mermaid-toolbar {position:absolute;z-index:10;display:flex;gap:4px;}

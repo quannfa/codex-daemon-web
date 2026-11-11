@@ -27,8 +27,37 @@ flow = """flowchart LR
  classDef green fill:#bbf7d0,stroke:#166534,color:#14532d;
  class A,E green;
 """
+tall = """flowchart TD
+ start([开始]) --> input[读取输入数据]
+ input --> validate{输入是否有效}
+ validate -- 否 --> error[记录错误并返回]
+ validate -- 是 --> prepare[预处理数据]
+ subgraph pipeline[共享单元自预测模块]
+   direction TB
+   prepare --> target[取第 t 个目标蛋白 p]
+   target --> history[读取已写入的历史 token]
+   history --> cross[历史 Cross-attention 用 Qp 读取全部已写回的预测]
+   target --> base[基础预测器 拼接 Qp 和 Rp 输出基础丰度]
+   history --> correct[修正头 结合 Qp、Rp 和历史读出 输出修正量]
+   cross --> correct
+   base --> merged[基础丰度 + 修正量]
+   correct --> merged
+ end
+ merged --> check{是否还有未处理目标}
+ check -- 是 --> target
+ check -- 否 --> save[写回历史 token 并保存结果]
+ save --> export[导出报告]
+ export --> finish([完成])
+ input --> side1[参数配置]
+ side1 --> prepare
+ history --> side2[历史状态]
+ side2 --> correct
+ classDef emphasis fill:#fffbd0,stroke:#999900,color:#333;
+ class pipeline emphasis;
+"""
 diagrams = [
     flow,
+    tall,
     "sequenceDiagram\n participant A as 用户\n participant B as 服务端\n A->>B: 提交请求\n B-->>A: 返回结果",
     "classDiagram\n Animal <|-- Duck\n Animal : +int age\n Duck : +quack()",
     "stateDiagram-v2\n [*] --> Ready\n Ready --> Working\n Working --> [*]",
@@ -63,16 +92,16 @@ with sync_playwright() as p:
     page.route("https://fonts.gstatic.com/**", lambda route: route.abort())
     page.goto(base + "/#share=11111111-1111-1111-1111-111111111111." + "a" * 43)
     page.wait_for_function("""() =>
-      document.querySelectorAll('.react-mermaid-wrapper svg[id^="codex-mermaid-"]').length === 4
+      document.querySelectorAll('.react-mermaid-wrapper svg[id^="codex-mermaid-"]').length === 5
     """)
 
     wrappers = page.locator(".react-mermaid-wrapper")
     valid = wrappers.locator("svg[id^='codex-mermaid-']")
-    expect(wrappers).to_have_count(5)
-    expect(valid).to_have_count(4)
+    expect(wrappers).to_have_count(6)
+    expect(valid).to_have_count(5)
     expect(page.locator(".react-mermaid-error")).to_have_count(1)
 
-    layout = wrappers.evaluate_all("""wrappers => wrappers.slice(0, 4).map(wrapper => {
+    layout = wrappers.evaluate_all("""wrappers => wrappers.slice(0, 5).map(wrapper => {
       const svg = wrapper.querySelector('svg[id^="codex-mermaid-"]');
       const wrapperBox = wrapper.getBoundingClientRect();
       const svgBox = svg.getBoundingClientRect();
@@ -88,8 +117,9 @@ with sync_playwright() as p:
         customFill: fills.filter(fill => fill === 'rgb(187, 247, 208)').length,
       };
     })""")
-    assert all(item["wrapperWidth"] > 0 and item["wrapperHeight"] > 0 and item["svgWidth"] > 0 and
-               item["svgHeight"] > 0 and item["svgInside"] and item["stylesheet"] for item in layout), layout
+    assert all(item["wrapperWidth"] > 0 and 240 <= item["wrapperHeight"] <= 361 and
+               item["svgWidth"] > 0 and item["svgHeight"] > 0 and item["svgInside"] and
+               item["stylesheet"] for item in layout), layout
     assert layout[0]["defaultFill"] > 0 and layout[0]["customFill"] > 0, layout[0]
 
     first = wrappers.first
