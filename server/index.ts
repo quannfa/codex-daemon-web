@@ -198,6 +198,22 @@ app.get("/api/goal-waits/:threadId", requireSession, (request, response) => {
   }
 });
 
+app.delete(
+  "/api/goal-waits/:threadId",
+  requireBrowserOrigin,
+  requireSession,
+  async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    try {
+      const threadId = request.params.threadId;
+      if (typeof threadId !== "string") throw new Error("Invalid conversation ID");
+      response.json({ cancelled: await goalWaits.cancel(threadId) });
+    } catch {
+      response.status(400).json({ error: "Invalid conversation ID." });
+    }
+  },
+);
+
 app.get("/api/browser/tabs", requireSession, async (request, response) => {
   response.setHeader("Cache-Control", "no-store");
   const session = authenticatedSession(request);

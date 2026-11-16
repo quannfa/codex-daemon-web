@@ -52,6 +52,7 @@ import ConversationSharing from "./ConversationSharing";
 import MessageTimestamp from "./MessageTimestamp";
 import {mergeItemTimestamps} from "./message-time";
 import ThreadGoalPanel from "./ThreadGoalPanel";
+import {cancelGoalWait} from "./goal-wait";
 import { FileReferenceContext, MarkdownContent, LocalResourceImage } from "./ResourceMarkdown";
 import FileReferenceViewer from "./FileReferenceViewer";
 import { localReferencePath } from "./resource-paths";
@@ -4998,6 +4999,26 @@ function WorkspaceApp() {
     const turnIdAtSend = activeTurnId;
     let optimisticId:string|null=null;
     try {
+      if (threadIdAtSend) {
+        try {
+          const cancelled = await cancelGoalWait(threadIdAtSend);
+          if (cancelled) {
+            setGoalWaitThreadIds(current => {
+              if (!current.has(threadIdAtSend)) return current;
+              const next = new Set(current);
+              next.delete(threadIdAtSend);
+              return next;
+            });
+            setGoalWaitRevision(value => value + 1);
+          }
+        } catch (error) {
+          setNotice({
+            tone: "error",
+            text: `Could not cancel the pending wait before sending this message. ${shortError(error)}`,
+          });
+          return;
+        }
+      }
       if (uploadsAtSend.length > 0 && threadIdAtSend) {
         const attachmentRoot =
           sessionUploadRoot ||
@@ -5349,6 +5370,24 @@ function WorkspaceApp() {
         });
         return;
       }
+    }
+    try {
+      const cancelled = await cancelGoalWait(threadIdAtQueue);
+      if (cancelled) {
+        setGoalWaitThreadIds(current => {
+          if (!current.has(threadIdAtQueue)) return current;
+          const next = new Set(current);
+          next.delete(threadIdAtQueue);
+          return next;
+        });
+        setGoalWaitRevision(value => value + 1);
+      }
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: `Could not cancel the pending wait before queueing this reply. ${shortError(error)}`,
+      });
+      return;
     }
     try {
       await retainSessionUploads(
@@ -5756,14 +5795,55 @@ function WorkspaceApp() {
       return;
     setInterrupting(true);
     try {
+      const threadId = selectedThread.id;
+      const turnId = activeTurnId;
+      const stopWarnings: string[] = [];
+      try {
+        const cancelled = await cancelGoalWait(threadId);
+        if (cancelled) {
+          setGoalWaitThreadIds(current => {
+            if (!current.has(threadId)) return current;
+            const next = new Set(current);
+            next.delete(threadId);
+            return next;
+          });
+          setGoalWaitRevision(value => value + 1);
+        }
+      } catch (error) {
+        stopWarnings.push(`saved wait: ${shortError(error)}`);
+      }
+      const pauseActiveGoal = async () => {
+        const result = await client.request<{goal:unknown}>("thread/goal/get", {
+          threadId,
+        });
+        if (isRecord(result.goal) && result.goal.status === "active")
+          await client.request("thread/goal/set", {
+            threadId,
+            status: "paused",
+            origin: "user",
+          });
+      };
+      try {
+        await pauseActiveGoal();
+      } catch {}
       await client.request("turn/interrupt", {
-        threadId: selectedThread.id,
-        turnId: activeTurnId,
+        threadId,
+        turnId,
       });
+      try {
+        await pauseActiveGoal();
+      } catch (error) {
+        stopWarnings.push(`goal pause after interrupt: ${shortError(error)}`);
+      }
+      if (stopWarnings.length)
+        setNotice({
+          tone: "info",
+          text: `The turn was interrupted, but stop verification was incomplete: ${stopWarnings.join("; ")}`,
+        });
     } catch (error) {
       setNotice({
         tone: "error",
-        text: `Could not interrupt the turn: ${shortError(error)}`,
+        text: `Could not stop the turn: ${shortError(error)}`,
       });
     } finally {
       setInterrupting(false);

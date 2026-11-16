@@ -14,6 +14,7 @@ type FakeState = {
   threadStatus: "idle" | "active" | "notLoaded";
   goal: { status: string; objective: string; updatedAt: number } | null;
   goalSetCalls: string[];
+  goalSetOrigins?: unknown[];
   queueAdds: Array<{ clientUserMessageId: string; input: unknown[] }>;
 };
 
@@ -28,6 +29,7 @@ function fakeConnection(state: FakeState) {
       if (method === "thread/goal/set") {
         const status = String(params.status);
         state.goalSetCalls.push(status);
+        state.goalSetOrigins?.push(params.origin);
         if (state.goal) {
           state.goal = { ...state.goal, status, updatedAt: state.goal.updatedAt + 1 };
         }
@@ -59,6 +61,7 @@ test("active goals pause immediately and resume once at the deadline", async () 
     threadStatus: "idle",
     goal: { status: "active", objective: "Finish the remote job", updatedAt: 10 },
     goalSetCalls: [],
+    goalSetOrigins: [],
     queueAdds: [],
   };
   const manager = new GoalWaitManager(
@@ -89,6 +92,7 @@ test("active goals pause immediately and resume once at the deadline", async () 
     state.now += 1_000;
     await (manager as any).process(registered.waitId);
     assert.deepEqual(state.goalSetCalls, ["paused", "active"]);
+    assert.deepEqual(state.goalSetOrigins, ["user", "automatic"]);
     assert.equal(manager.pending().length, 0);
     assert.equal(manager.waitStatus(threadId), null);
 
@@ -138,6 +142,39 @@ test("a conversation without a goal receives one deduplicated continuation", asy
   }
 });
 
+test("a non-active goal cannot create a queued wait", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-goal-wait-paused-test-"));
+  const state: FakeState = {
+    now: nowStart,
+    latestTurnId: "turn-1",
+    threadStatus: "idle",
+    goal: { status: "paused", objective: "Continue", updatedAt: 15 },
+    goalSetCalls: [],
+    queueAdds: [],
+  };
+  const manager = new GoalWaitManager(
+    join(directory, "waits.json"),
+    async () => fakeConnection(state),
+    () => state.now,
+  );
+  try {
+    await manager.start();
+    await assert.rejects(
+      manager.register(
+        threadId,
+        new Date(nowStart + 1_000).toISOString(),
+        "remote job",
+      ),
+      /goal is paused/,
+    );
+    assert.equal(manager.pending().length, 0);
+    assert.equal(state.queueAdds.length, 0);
+  } finally {
+    manager.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("manual activity restores an owned paused goal and cancels the wait", async () => {
   const directory = await mkdtemp(join(tmpdir(), "codex-goal-wait-cancel-test-"));
   const state: FakeState = {
@@ -165,6 +202,102 @@ test("manual activity restores an owned paused goal and cancels the wait", async
     await (manager as any).process(registered.waitId);
     assert.deepEqual(state.goalSetCalls, ["paused", "active"]);
     assert.equal(manager.pending().length, 0);
+  } finally {
+    manager.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an externally resumed goal invalidates its pending wait", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-goal-wait-resumed-test-"));
+  const state: FakeState = {
+    now: nowStart,
+    latestTurnId: "turn-1",
+    threadStatus: "idle",
+    goal: { status: "active", objective: "Continue", updatedAt: 30 },
+    goalSetCalls: [],
+    queueAdds: [],
+  };
+  const manager = new GoalWaitManager(
+    join(directory, "waits.json"),
+    async () => fakeConnection(state),
+    () => state.now,
+  );
+  try {
+    await manager.start();
+    const registered = await manager.register(
+      threadId,
+      new Date(nowStart + 60_000).toISOString(),
+      "remote job",
+    );
+    assert.equal(manager.pending().length, 1);
+    state.goal = { ...state.goal!, status: "active", updatedAt: 32 };
+    await (manager as any).process(registered.waitId);
+    assert.equal(manager.pending().length, 0);
+    assert.deepEqual(state.goalSetCalls, ["paused"]);
+  } finally {
+    manager.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a repeated wait replaces stale state and pauses the goal again", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-goal-wait-repeat-test-"));
+  const state: FakeState = {
+    now: nowStart,
+    latestTurnId: "turn-1",
+    threadStatus: "active",
+    goal: { status: "active", objective: "Continue", updatedAt: 40 },
+    goalSetCalls: [],
+    queueAdds: [],
+  };
+  const manager = new GoalWaitManager(
+    join(directory, "waits.json"),
+    async () => fakeConnection(state),
+    () => state.now,
+  );
+  try {
+    await manager.start();
+    const until = new Date(nowStart + 60_000).toISOString();
+    const first = await manager.register(threadId, until, "remote job");
+    state.goal = { ...state.goal!, status: "active", updatedAt: 42 };
+    const repeated = await manager.register(threadId, until, "remote job");
+    assert.equal(repeated.status, "scheduled");
+    assert.notEqual(repeated.waitId, first.waitId);
+    assert.equal(manager.pending().length, 1);
+    assert.deepEqual(state.goalSetCalls, ["paused", "paused"]);
+  } finally {
+    manager.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancelling a wait removes it without changing the goal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-goal-wait-explicit-cancel-test-"));
+  const state: FakeState = {
+    now: nowStart,
+    latestTurnId: "turn-1",
+    threadStatus: "idle",
+    goal: { status: "active", objective: "Continue", updatedAt: 50 },
+    goalSetCalls: [],
+    queueAdds: [],
+  };
+  const manager = new GoalWaitManager(
+    join(directory, "waits.json"),
+    async () => fakeConnection(state),
+    () => state.now,
+  );
+  try {
+    await manager.start();
+    await manager.register(
+      threadId,
+      new Date(nowStart + 60_000).toISOString(),
+      "remote job",
+    );
+    assert.equal(await manager.cancel(threadId), true);
+    assert.equal(await manager.cancel(threadId), false);
+    assert.equal(manager.pending().length, 0);
+    assert.deepEqual(state.goalSetCalls, ["paused"]);
   } finally {
     manager.stop();
     await rm(directory, { recursive: true, force: true });

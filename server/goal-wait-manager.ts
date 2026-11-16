@@ -82,6 +82,7 @@ export type GoalWaitStatus = {
 };
 
 const retryDelayMs = 5_000;
+const goalVerificationDelayMs = 5_000;
 const maxTimerDelayMs = 2_000_000_000;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -253,6 +254,18 @@ export class GoalWaitManager {
       .map((wait) => wait.threadId);
   }
 
+  async cancel(threadIdValue: string): Promise<boolean> {
+    const threadId = daemonThreadId(threadIdValue);
+    await this.initialize();
+    return this.exclusive(async () => {
+      const wait = this.data.waits.find((entry) => entry.threadId === threadId);
+      if (!wait) return false;
+      this.remove(wait.id);
+      await this.save();
+      return true;
+    });
+  }
+
   async register(
     threadIdValue: string,
     until: string,
@@ -265,7 +278,25 @@ export class GoalWaitManager {
     await this.initialize();
     return this.exclusive(async () => {
       const existing = this.data.waits.find((wait) => wait.threadId === threadId);
-      if (existing) return this.result(existing, "alreadyScheduled");
+      if (existing) {
+        let rpc: RpcConnection | undefined;
+        try {
+          rpc = await this.connect();
+          const goalResponse = await rpc.call<{ goal?: unknown }>(
+            "thread/goal/get",
+            { threadId },
+          );
+          if (
+            existing.resumeMode !== "goal" ||
+            this.ownsPausedGoal(existing, goalSnapshot(goalResponse.goal))
+          )
+            return this.result(existing, "alreadyScheduled");
+          this.remove(existing.id);
+          await this.save();
+        } finally {
+          rpc?.close();
+        }
+      }
 
       let rpc: RpcConnection | undefined;
       let wait: StoredWait | undefined;
@@ -276,6 +307,10 @@ export class GoalWaitManager {
           { threadId },
         );
         const goal = goalSnapshot(goalResponse.goal);
+        if (goal && goal.status !== "active")
+          throw new TaskValidationError(
+            `The conversation goal is ${goal.status}; resume it before registering a wait`,
+          );
         const sourceTurnId = await this.latestTurnId(rpc, threadId);
         wait = {
           id: randomUUID(),
@@ -396,8 +431,14 @@ export class GoalWaitManager {
     if (prior) clearTimeout(prior);
     const until = Date.parse(wait.until);
     const retryAt = wait.retryAt ?? 0;
-    const target = wait.phase === "pausing" ? Math.max(this.now(), retryAt) : Math.max(until, retryAt);
-    const delay = Math.max(0, target - this.now());
+    const now = this.now();
+    const target =
+      wait.resumeMode === "goal" && wait.phase === "waiting" && now < until
+        ? Math.min(until, Math.max(now + goalVerificationDelayMs, retryAt))
+        : wait.phase === "pausing"
+          ? Math.max(now, retryAt)
+          : Math.max(until, retryAt);
+    const delay = Math.max(0, target - now);
     const timer = setTimeout(() => {
       this.timers.delete(wait.id);
       void this.process(wait.id).catch((error) => {
@@ -416,7 +457,16 @@ export class GoalWaitManager {
       if (!wait) return;
       const until = Date.parse(wait.until);
       const retryAt = wait.retryAt ?? 0;
-      if ((wait.phase !== "pausing" && this.now() < until) || this.now() < retryAt) {
+      if (this.now() < retryAt) {
+        this.schedule(wait);
+        return;
+      }
+
+      if (
+        wait.resumeMode !== "goal" &&
+        wait.phase !== "pausing" &&
+        this.now() < until
+      ) {
         this.schedule(wait);
         return;
       }
@@ -424,6 +474,23 @@ export class GoalWaitManager {
       let rpc: RpcConnection | undefined;
       try {
         rpc = await this.connect();
+        if (
+          wait.resumeMode === "goal" &&
+          wait.phase === "waiting" &&
+          this.now() < until
+        ) {
+          const goalResponse = await rpc.call<{ goal?: unknown }>(
+            "thread/goal/get",
+            { threadId: wait.threadId },
+          );
+          if (!this.ownsPausedGoal(wait, goalSnapshot(goalResponse.goal))) {
+            this.remove(wait.id);
+            await this.save();
+            return;
+          }
+          this.schedule(wait);
+          return;
+        }
         if (wait.phase === "pausing") {
           await this.pauseGoal(rpc, wait);
           wait.phase = "waiting";
@@ -470,7 +537,7 @@ export class GoalWaitManager {
     const response = await rpc.call<{ goal?: unknown }>("thread/goal/set", {
       threadId: wait.threadId,
       status: "paused",
-      origin: "automatic",
+      origin: "user",
     });
     let paused = goalFromResponse(response);
     if (!paused) {

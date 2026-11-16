@@ -2,6 +2,7 @@ import {Clock3} from "lucide-react";
 import {useEffect,useState} from "react";
 import type {RpcClient} from "./protocol";
 import {
+  cancelGoalWait,
   formatWaitCountdown,
   goalWaitDisplayMode,
   isGoalWaitStatus,
@@ -101,6 +102,7 @@ export default function ThreadGoalPanel({
     if(value!==null&&(!Number.isSafeInteger(value)||value<=0)){setMessage("Token budget must be a positive integer.");return;}
     setBusy(true);setMessage("");
     try{
+      if(wait){await cancelGoalWait(threadId);setWait(null);}
       const result=await client.request<{goal:ThreadGoal}>("thread/goal/set",{
         threadId,origin:"user",objective:objective.trim(),status,tokenBudget:value,
       });
@@ -112,6 +114,7 @@ export default function ThreadGoalPanel({
     if(!client||!goal||busy)return;
     setBusy(true);setMessage("");
     try{
+      if(wait){await cancelGoalWait(threadId);setWait(null);}
       const result=await client.request<{goal:ThreadGoal}>("thread/goal/set",{
         threadId,origin:"user",status:next,
       });
@@ -124,6 +127,7 @@ export default function ThreadGoalPanel({
     if(!window.confirm("Clear this conversation goal? This does not delete the conversation."))return;
     setBusy(true);setMessage("");
     try{
+      if(wait){await cancelGoalWait(threadId);setWait(null);}
       const result=await client.request<{cleared:boolean}>("thread/goal/clear",{threadId,origin:"user"});
       if(result.cleared){setGoal(null);setObjective("");setBudget("");setStatus("active");setEditing(false);}
       else setMessage("Codex did not clear the goal.");

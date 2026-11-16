@@ -11,6 +11,17 @@ export type GoalWaitStatus = {
 
 export type GoalWaitDisplayMode = "preparing" | "waiting" | "resuming";
 
+export async function cancelGoalWait(threadId: string): Promise<boolean> {
+  const response = await fetch(`/api/goal-waits/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  const data = await response.json() as { cancelled?: unknown; error?: unknown };
+  if (!response.ok)
+    throw new Error(typeof data.error === "string" ? data.error : "Could not cancel the wait.");
+  return data.cancelled === true;
+}
+
 export function isGoalWaitStatus(value: unknown): value is GoalWaitStatus {
   if (!value || typeof value !== "object") return false;
   const wait = value as Record<string, unknown>;
