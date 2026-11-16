@@ -247,6 +247,12 @@ export class GoalWaitManager {
     };
   }
 
+  workingThreadIds(): string[] {
+    return this.data.waits
+      .filter((wait) => wait.resumeMode === "goal")
+      .map((wait) => wait.threadId);
+  }
+
   async register(
     threadIdValue: string,
     until: string,

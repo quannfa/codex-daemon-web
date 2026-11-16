@@ -225,6 +225,7 @@ const strings:Record<string,string> = {
   "Saving…":"保存中…",
   "Edit":"编辑",
   "Working":"工作中",
+  "Working · goal wait active":"工作中 · 正在目标等待",
   "Idle":"空闲",
   "Error":"错误",
   "Needs decision":"需要决定",

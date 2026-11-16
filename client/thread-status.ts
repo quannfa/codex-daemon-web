@@ -38,7 +38,7 @@ export function activeSubagentParents(agents: ThreadSummary[]): Set<string> {
 
 export function threadIndicator(
   thread: ThreadSummary,
-  options: { pendingDecision?: boolean; activeChild?: boolean; scheduled?: boolean; failedTurn?: boolean } = {},
+  options: { pendingDecision?: boolean; activeChild?: boolean; scheduled?: boolean; failedTurn?: boolean; goalWait?: boolean } = {},
 ): ThreadIndicatorInfo {
   if (thread.status?.type === "systemError" || options.failedTurn)
     return { kind: "error", label: "Codex error / failed turn" };
@@ -47,6 +47,7 @@ export function threadIndicator(
     /approval|input|user.?response|elicitation|decision|permission/i.test(flag),
   );
   if (needsDecision) return { kind: "decision", label: "Needs your decision" };
+  if (options.goalWait) return { kind: "working", label: "Working · goal wait active" };
   if (flags.some((flag) => /sub.?agent|child.?agent|await.?agent|waiting.?agent/i.test(flag)))
     return { kind: "waiting", label: "Waiting for subagent" };
   // If a child is active, indicate parent coordination; this is an inference,

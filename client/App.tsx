@@ -2049,6 +2049,7 @@ function WorkspaceApp() {
   const [projectMutationBusy, setProjectMutationBusy] = useState(false);
 
   const [scheduledTasksForIndicators, setScheduledTasksForIndicators] = useState<ScheduledTask[]>([]);
+  const [goalWaitThreadIds,setGoalWaitThreadIds]=useState<Set<string>>(()=>new Set());
   const [failedThreadIds, setFailedThreadIds] = useState<Set<string>>(() => new Set());
   const [threadStatusPreferences, setThreadStatusPreferences] = useState(() => {
     try { return readThreadStatusPreferences(localStorage); }
@@ -2106,6 +2107,7 @@ function WorkspaceApp() {
     null,
   );
   const [goalRevision,setGoalRevision]=useState(0);
+  const [goalWaitRevision,setGoalWaitRevision]=useState(0);
   const [threadTokenUsage, setThreadTokenUsage] =
     useState<ThreadTokenUsage | null>(null);
   const selectedRef = useRef<string | null>(null);
@@ -2727,6 +2729,35 @@ function WorkspaceApp() {
     void refreshStatus();
   }, [refreshStatus]);
 
+  useEffect(()=>{
+    if(!status?.authenticated){setGoalWaitThreadIds(new Set());return;}
+    let cancelled=false;
+    let inFlight=false;
+    const load=async()=>{
+      if(inFlight)return;
+      inFlight=true;
+      try{
+        const response=await fetch("/api/goal-waits",{credentials:"same-origin"});
+        const data=await response.json() as {workingThreadIds?:unknown};
+        if(!response.ok||!Array.isArray(data.workingThreadIds)||
+          !data.workingThreadIds.every((value):value is string=>typeof value==="string"))return;
+        if(cancelled)return;
+        const next=new Set(data.workingThreadIds);
+        setGoalWaitThreadIds(current=>current.size===next.size&&[...next].every(id=>current.has(id))?current:next);
+      }catch{/* The next poll reconciles transient WebUI errors. */}
+      finally{inFlight=false;}
+    };
+    const refreshWhenVisible=()=>{if(document.visibilityState==="visible")void load();};
+    void load();
+    const timer=window.setInterval(refreshWhenVisible,5_000);
+    document.addEventListener("visibilitychange",refreshWhenVisible);
+    return()=>{
+      cancelled=true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange",refreshWhenVisible);
+    };
+  },[status?.authenticated,goalWaitRevision]);
+
   useEffect(() => {
     const threadId = selectedThread?.id ?? null;
     if (noticeThreadIdRef.current === threadId) return;
@@ -3116,6 +3147,7 @@ function WorkspaceApp() {
       }
 
       if (method === "thread/goal/updated" || method === "thread/goal/cleared") {
+        setGoalWaitRevision(value=>value+1);
         if(asString(params.threadId)===selectedRef.current)
           setGoalRevision(value=>value+1);
         return;
@@ -4394,7 +4426,8 @@ function WorkspaceApp() {
     activeChild: activeChildParentIds.has(thread.id),
     scheduled: scheduledIndicatorIds.has(thread.id),
     failedTurn: failedThreadIds.has(thread.id),
-  }).kind, [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds]);
+    goalWait: goalWaitThreadIds.has(thread.id),
+  }).kind, [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds,goalWaitThreadIds]);
   const projectGroups: SidebarThreadGroup[] = useMemo(
     () => groupSidebarThreads(filteredThreads,codexProjects,projectPreferences.sort,archivedThreads,
       projectPreferences.view,statusForThread),
@@ -6480,6 +6513,7 @@ function WorkspaceApp() {
                                     activeChild: activeChildParentIds.has(thread.id),
                                     scheduled: scheduledIndicatorIds.has(thread.id),
                                     failedTurn: failedThreadIds.has(thread.id),
+                                    goalWait: goalWaitThreadIds.has(thread.id),
                                   });
                                   const marker = threadStatusPreferences[indicator.kind];
                                   return marker.enabled ? <span
