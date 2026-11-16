@@ -17,14 +17,21 @@ async function fixture(t:any){
  const registry=join(dir,"state","uploads.json"),root=join(dir,"files");
  const uploads=new SharedUploads(registry,root,shares);await uploads.initialize();
  const calls:{method:string;params:any}[]=[];
+ let runtimeWorkspaceRoots:string[]=[];
+ let threadStatus:"idle"|"active"="idle";
  const rpc:SharedRpc={call:async<T>(method:string,params:any):Promise<T>=>{
   calls.push({method,params});assert.equal(params.threadId,grant.threadId);
-  if(method==="thread/resume")return {thread:{id:grant.threadId}} as T;
+  if(method==="thread/read")return {thread:{id:grant.threadId,cwd:"/private",status:{type:threadStatus},environments:[{runtimeWorkspaceRoots}]}} as T;
+  if(method==="thread/resume"){
+   runtimeWorkspaceRoots=params.runtimeWorkspaceRoots||runtimeWorkspaceRoots;
+   return {thread:{id:grant.threadId,cwd:"/private",status:{type:threadStatus}},runtimeWorkspaceRoots} as T;
+  }
+  if(method==="thread/unsubscribe")return {status:"unsubscribed"} as T;
   if(method==="thread/queue/add")return {queuedSubmission:{id:randomUUID()}} as T;
   throw Error("Unexpected RPC "+method);
  },close:()=>{}};
  const gateway=new SharedConversationGateway(shares,async()=>rpc,()=>undefined,uploads);t.after(()=>gateway.close());
- return {dir,shares,created,grant,registry,root,uploads,calls,gateway,rpc};
+ return {dir,shares,created,grant,registry,root,uploads,calls,gateway,rpc,setThreadStatus:(value:"idle"|"active")=>{threadStatus=value;}};
 }
 test("uploads retain original bytes, normalize names, deduplicate retries and survive restart",async t=>{
  const f=await fixture(t),id=randomUUID();
@@ -51,6 +58,8 @@ test("image-only and file messages enqueue fixed typed inputs and do not repeat 
  assert.equal((await f.gateway.send(f.grant,body)).status,"queued");
  assert.equal((await f.gateway.send(f.grant,body)).status,"queued");
  const queues=f.calls.filter(c=>c.method==="thread/queue/add");assert.equal(queues.length,1);
+ const attachmentSetup=f.calls.slice(0,3).map(c=>c.method);
+ assert.deepEqual(attachmentSetup,["thread/resume","thread/unsubscribe","thread/resume"]);
  assert.deepEqual(Object.keys(queues[0].params).sort(),["clientUserMessageId","input","threadId"]);
  assert.deepEqual(queues[0].params.input.map((x:any)=>x.type),["text","localImage","text"]);
  assert.ok(queues[0].params.input[2].text.includes("document.pdf"));
@@ -59,6 +68,29 @@ test("image-only and file messages enqueue fixed typed inputs and do not repeat 
  const gateway=new SharedConversationGateway(restart,async()=>f.rpc,()=>undefined,f.uploads);t.after(()=>gateway.close());
  assert.equal((await gateway.send(f.grant,body)).status,"queued");
  assert.equal(f.calls.filter(c=>c.method==="thread/queue/add").length,1);
+});
+test("shared attachment setup preserves existing roots and waits for active turns",async t=>{
+ const f=await fixture(t),id=randomUUID();
+ await f.uploads.put(f.grant,id,"notes.txt",Buffer.from("data"));
+ f.setThreadStatus("active");
+ await assert.rejects(
+  f.gateway.send(f.grant,{text:"",attachmentIds:[id],requestId:randomUUID()}),
+  {status:409},
+ );
+ assert.equal(f.calls.some(c=>c.method==="thread/unsubscribe"),false);
+
+ const idle=await fixture(t),existing="/already-configured";
+ await idle.uploads.put(idle.grant,randomUUID(),"notes.txt",Buffer.from("data"));
+ // The fixture starts empty; seed the daemon's persisted roots through the
+ // first resume so the attachment update must retain them.
+ idle.calls.length=0;
+ const seed=await idle.rpc.call("thread/resume",{threadId:idle.grant.threadId,excludeTurns:true,runtimeWorkspaceRoots:[existing]});
+ assert.deepEqual((seed as any).runtimeWorkspaceRoots,[existing]);
+ idle.calls.length=0;
+ const uploadId=JSON.parse(await readFile(idle.registry,"utf8"))[0].id as string;
+ await idle.gateway.send(idle.grant,{text:"",attachmentIds:[uploadId],requestId:randomUUID()});
+ const resumed=idle.calls.find(c=>c.method==="thread/resume"&&c.params.runtimeWorkspaceRoots);
+ assert.deepEqual(resumed?.params.runtimeWorkspaceRoots.sort(),[existing,"/private",idle.uploads.runtimeWorkspaceRoot(idle.grant)].sort());
 });
 test("attachments cannot select targets or options, and other links cannot submit them",async t=>{
  const f=await fixture(t),id=randomUUID();

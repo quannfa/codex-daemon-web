@@ -10,12 +10,14 @@ import {
 } from "./auth.js";
 import { config } from "./config.js";
 import { connectDaemon } from "./daemon.js";
+import { compactBrowserMessage, compactBrowserPayload } from "./browser-frame.js";
 import { sessionExpiryDelay } from "./session-expiry-delay.js";
 import { notifyUserInput } from "./push.js";
 import { claimThreadWriter, releaseThreadWriter, releaseThreadWriterFor, BridgeRpcRejectedError, type ThreadOwner } from "./bridge-owner.js";
 
 const upstreamInitId = "codex-daemon-web-initialize";
 const maxBufferedBytes = 2 * 1024 * 1024;
+const maxFrameBytes = 64 * 1024 * 1024;
 const notifiedRequests = new Map<string, number>();
 
 function observeUserInputRequest(text: string): void {
@@ -89,9 +91,16 @@ function safeForward(
     target.readyState !== WebSocket.OPEN
   )
     return false;
+  const frameBytes = Buffer.byteLength(text, "utf8");
+  const bufferedBytes = target.bufferedAmount;
+  // A single trusted daemon frame may be larger than the normal queue budget
+  // (for example, an image result). Reject oversized frames and accumulated
+  // backlog, but do not reject a large frame solely because it exceeds the
+  // backlog budget while the socket is otherwise empty.
   if (
-    target.bufferedAmount + Buffer.byteLength(text, "utf8") >
-    maxBufferedBytes
+    frameBytes > maxFrameBytes ||
+    bufferedBytes > maxBufferedBytes ||
+    (bufferedBytes > 0 && bufferedBytes + frameBytes > maxBufferedBytes)
   ) {
     target.close(1013, "client is not keeping up");
     return false;
@@ -216,7 +225,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
         const timeout = setTimeout(() => {
           completionWaiters.delete(key);
           reject(new Error("Timed out waiting for parent turn completion"));
-        },12*60*60*1000);
+        }, config.turnCompletionTimeoutMs);
         timeout.unref();
         completionWaiters.set(key,{resolve,reject,timeout});
       });
@@ -391,7 +400,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
               { binary: false },
             );
             for (const pending of pendingMessages.splice(0)) {
-              if (!safeForward(upstream!, browser, pending)) break;
+              if (!safeForward(upstream!, browser, compactBrowserMessage(pending))) break;
             }
             return;
           }
@@ -404,8 +413,9 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
           pendingMessages.push(text);
           return;
         }
+        let packet: unknown;
         try {
-          const packet = JSON.parse(text) as unknown;
+          packet = JSON.parse(text) as unknown;
           if (isJsonObject(packet)) {
             if (packet.method === "turn/completed" && isJsonObject(packet.params)) {
               const params = packet.params;
@@ -449,7 +459,14 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
             }
           }
         } catch { /* Keep the original RPC frame forwarding behavior. */ }
-        safeForward(upstream!, browser, text);
+        let browserText = text;
+        try {
+          const compacted = compactBrowserPayload(packet);
+          if (compacted !== packet) browserText = JSON.stringify(compacted);
+        } catch {
+          // Preserve the original frame if optional browser compaction fails.
+        }
+        safeForward(upstream!, browser, browserText);
       });
 
       upstream.on("close", () => {

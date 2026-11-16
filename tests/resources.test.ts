@@ -28,6 +28,8 @@ test("resources allow readable files outside projects while protecting credentia
  await assert.rejects(store.register({path:project}),/regular file/);
  const officialProject=join(temp,".codex",".chatgpt-projects","example");await mkdir(officialProject,{recursive:true});await writeFile(join(officialProject,"report.md"),"# Report");
  const officialStore=new ResourceStore(join(temp,"official-state","registry.json"));await officialStore.initialize();assert.equal((await officialStore.register({path:join(officialProject,"report.md")})).kind,"markdown");
+ const generatedImages=join(temp,".codex","generated_images");await mkdir(generatedImages,{recursive:true});await writeFile(join(generatedImages,"result.png"),"png");
+ assert.equal((await officialStore.register({path:join(generatedImages,"result.png")})).kind,"image");
  await writeFile(join(project,"locked.txt"),"locked",{mode:0o000});await assert.rejects(store.register({path:join(project,"locked.txt")}),{code:"EACCES"});
 
  assert.equal((await store.register({path:outside})).path,outside);

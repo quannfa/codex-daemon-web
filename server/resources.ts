@@ -15,9 +15,17 @@ export function within(root: string, path: string) {
 }
 function permitted(path: string) {
   const parts = path.split(sep);
+  // Image-generation outputs are ordinary user-visible resources; other
+  // Codex state remains excluded by default.
+  const isGeneratedImage = (part: string, index: number) =>
+    part === ".codex" &&
+    parts[index + 1] === "generated_images" &&
+    Boolean(parts[index + 2]);
   return !parts.some((part,index) =>
     [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".git", ".config", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".dockercfg"].includes(part) ||
-    (part === ".codex" && !(parts[index+1] === ".chatgpt-projects" && parts[index+2])) ||
+    (part === ".codex" &&
+      !(parts[index+1] === ".chatgpt-projects" && parts[index+2]) &&
+      !isGeneratedImage(part,index)) ||
     /^\.env(?:\.|$)/.test(part) || /^(?:id_rsa|id_ed25519)(?:\.|$)/.test(part)
   ) && !/\.(?:key|p12|pfx|pem)$/i.test(path) && !["/proc", "/sys", "/dev"].some(root => within(root,path));
 }

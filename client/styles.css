@@ -2042,6 +2042,10 @@ button:disabled {
   padding: 3px 7px 8px;
   border-top: 1px solid var(--border-soft);
 }
+.image-generation-body { display: grid; gap: 8px; }
+.image-generation-preview { display: block; max-width: 100%; overflow: hidden; }
+.image-generation-preview > img { display: block; max-width: 100%; max-height: 520px; height: auto; object-fit: contain; border-radius: 8px; }
+.image-generation-preview .local-resource-image { display: block; max-width: 100%; }
 .agent-activity-body {
   padding-top: 8px;
 }
@@ -3015,18 +3019,34 @@ button:disabled {
   border-radius: 7px;
   background: var(--surface-subtle);
 }
+.upload-chip > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
 .upload-chip img {
   width: 27px;
   height: 27px;
   object-fit: cover;
   border-radius: 4px;
 }
-.upload-chip span {
+.upload-chip-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
   overflow: hidden;
   color: var(--text-strong);
   font-size: 9px;
+}
+.upload-chip-copy strong,
+.upload-chip-copy small {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.upload-chip-copy small {
+  color: var(--muted);
+  font-size: 8px;
 }
 .upload-chip button {
   display: grid;

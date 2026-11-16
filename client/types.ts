@@ -30,6 +30,7 @@ export type RpcMessage = RpcReply | RpcNotification | RpcServerRequest;
 export type DaemonStatus = {
   sidebar?: { projectlessThreadIds: string[]; projectThreadIds: string[] };
   authenticated: boolean;
+  runtimeWorkspaceRoot?: string;
   daemon: {
     available: boolean;
     endpoint?: string;
@@ -148,7 +149,11 @@ export type ThreadDetails = {
   disabledPluginIds?: string[];
   cwd: string;
   model: string | null;
+  modelProvider?: string;
+  serviceTier?: string | null;
+  runtimeWorkspaceRoots?: string[];
   approvalPolicy: unknown;
+  approvalsReviewer?: unknown;
   sandbox: unknown;
   activePermissionProfile: { id: string; extends: string | null } | null;
   reasoningEffort: string | null;
@@ -202,4 +207,22 @@ export type McpServerElicitationResponse = {
   action: "accept" | "decline" | "cancel";
   content: unknown | null;
   _meta: Record<string, unknown> | null;
+};
+
+export type McpServerStatus = {
+  name: string;
+  runtimeStatus?: string | null;
+  authStatus?: string | null;
+  tools?: Record<string, unknown> | null;
+  toolsError?: string | null;
+  serverInfo?: {
+    name?: string | null;
+    title?: string | null;
+    description?: string | null;
+  } | null;
+};
+
+export type McpServerStatusListResponse = {
+  data: McpServerStatus[];
+  nextCursor?: string | null;
 };

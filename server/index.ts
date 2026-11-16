@@ -3,6 +3,8 @@ import { ConversationShares } from "./conversation-shares.js";
 import { SharedConversationGateway } from "./shared-conversation.js";
 import { mountConversationShares } from "./share-routes.js";
 import { ResourceStore, mountResources } from "./resources.js";
+import { SessionUploads } from "./session-uploads.js";
+import { mountSessionUploads } from "./session-upload-routes.js";
 import "dotenv/config";
 import { readSidebarMetadata } from "./sidebar-metadata.js";
 import { createServer } from "node:http";
@@ -90,10 +92,14 @@ async function requireSession(
   next();
 }
 
-async function statusPayload() {
+async function statusPayload(request?: express.Request) {
   const available = await daemonAvailable();
+  const session = request ? authenticatedSession(request) : null;
   return {
     authenticated: true,
+    ...(session
+      ? { runtimeWorkspaceRoot: sessionUploads.runtimeWorkspaceRoot(session) }
+      : {}),
     sidebar: await readSidebarMetadata(),
     daemon: {
       available,
@@ -120,6 +126,18 @@ app.use(express.json({ limit: "16kb", strict: true }));
 const resourceStore = new ResourceStore(resolve(dirname(config.tokenPath), "resources.json"), config.endpoint.kind === "unix");
 await resourceStore.initialize();
 mountResources(app, resourceStore, requireSession, requireBrowserOrigin);
+const sessionUploads = new SessionUploads(
+  config.sessionUploadsPath,
+  resolve(dirname(config.tokenPath), "..", "codex-daemon-web-session-uploads"),
+  config.endpoint.kind === "unix",
+);
+await sessionUploads.initialize();
+const sessionUploadPruneTimer = setInterval(
+  () => void sessionUploads.prune().catch(() => undefined),
+  3600_000,
+);
+sessionUploadPruneTimer.unref();
+mountSessionUploads(app, sessionUploads, requireSession, requireBrowserOrigin);
 const conversationShares = new ConversationShares(resolve(dirname(config.tokenPath),"conversation-shares.json"));
 await conversationShares.initialize();
 const sharedUploads = new SharedUploads(resolve(dirname(config.tokenPath),"shared-uploads.json"),
@@ -138,7 +156,7 @@ app.post(
     try {
       const succeeded = await login(request, response, request.body?.token);
       if (!succeeded) return;
-      response.json(await statusPayload());
+      response.json(await statusPayload(request));
     } catch (error) {
       next(error);
     }
@@ -150,9 +168,9 @@ app.get("/api/subagent-returns/status", requireSession, (_request, response) => 
   response.json({ ...subagentReturnLoop.status(), configured: config.subagentReturnEnabled });
 });
 
-app.get("/api/status", requireSession, async (_request, response, next) => {
+app.get("/api/status", requireSession, async (request, response, next) => {
   try {
-    response.json(await statusPayload());
+    response.json(await statusPayload(request));
   } catch (error) {
     next(error);
   }
@@ -468,6 +486,7 @@ server.listen(config.port, config.host, () => {
 
 function shutdown(): void {
   clearInterval(uploadPruneTimer);
+  clearInterval(sessionUploadPruneTimer);
   sharedConversations.close();
   scheduledTaskScheduler.stop();
   subagentReturnLoop.stop();

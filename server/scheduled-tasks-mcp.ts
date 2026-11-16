@@ -11,6 +11,7 @@ import type { ScheduledTask } from "./scheduled-tasks.js";
 import { currentDaemonThreadId, scheduledTaskInput } from "./scheduled-task-target.js";
 
 type JsonRecord = Record<string, unknown>;
+const maxWaitMs = 48 * 60 * 60 * 1000;
 
 const scheduleSchema = {
   type: "object",
@@ -80,6 +81,32 @@ const tools: Tool[] = [
     name: "get_scheduled_task_context",
     description: "Read and verify this MCP call's current daemon conversation and Codex Link without changing or starting a task. Returns an error when caller identity is unavailable.",
     inputSchema: {type:"object", properties:{}, additionalProperties:false},
+  },
+  {
+    name: "wait_until",
+    description:
+      "Keep the current Codex turn open until the requested duration or timestamp. This is the mandatory waiting mechanism for every model: use it for long waits instead of ending the turn, clock.sleep, shell sleep, functions.wait, or repeated polling.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        durationMs: {
+          type: "integer",
+          minimum: 100,
+          maximum: maxWaitMs,
+          description: "How long to wait in milliseconds.",
+        },
+        until: {
+          type: "string",
+          description: "An ISO-8601 timestamp in the future.",
+        },
+        reason: {
+          type: "string",
+          maxLength: 1000,
+          description: "Short explanation for the wait.",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "list_scheduled_tasks",
@@ -157,7 +184,7 @@ const server = new Server(
   {
     capabilities: { tools: { listChanged: false } },
     instructions:
-      "Manage only scheduled tasks and their saved run history. Task run history is retained when tasks are edited, paused, or archived.",
+      "Manage scheduled tasks and their saved run history. For any wait, every model must call wait_until so the current turn remains open; never emulate waiting by ending the turn, using clock.sleep, shell sleep, functions.wait, or short polling. Task run history is retained when tasks are edited, paused, or archived.",
   },
 );
 
@@ -192,6 +219,21 @@ async function callTaskControl(
 ): Promise<unknown> {
   const meta = isRecord(metadata) ? metadata : {};
   const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+  if (name === "wait_until") {
+    const durationMs =
+      typeof args.durationMs === "number" ? args.durationMs : undefined;
+    const until = typeof args.until === "string" ? args.until : undefined;
+    const reason = typeof args.reason === "string" ? args.reason : undefined;
+    return control(
+      {
+        operation: "wait",
+        ...(durationMs === undefined ? {} : { durationMs }),
+        ...(until === undefined ? {} : { until }),
+        ...(reason === undefined ? {} : { reason }),
+      },
+      { timeoutMs: null },
+    );
+  }
   if (name === "get_scheduled_task_context")
     return control({operation:"validateThread", id:currentDaemonThreadId(meta)});
   if (name === "list_scheduled_tasks") {
@@ -229,9 +271,14 @@ async function callTaskControl(
   return control({ operation, id: requireId(taskId) });
 }
 
-async function control<T = unknown>(body: JsonRecord): Promise<T> {
+async function control<T = unknown>(
+  body: JsonRecord,
+  options: { timeoutMs?: number | null } = {},
+): Promise<T> {
   const content = JSON.stringify(body);
   return new Promise<T>((resolve, reject) => {
+    const timeoutMs =
+      options.timeoutMs === null ? undefined : options.timeoutMs ?? 10_000;
     const request = httpRequest(
       {
         socketPath: config.scheduledTasksSocketPath,
@@ -241,7 +288,7 @@ async function control<T = unknown>(body: JsonRecord): Promise<T> {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(content),
         },
-        timeout: 10_000,
+        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -270,9 +317,10 @@ async function control<T = unknown>(body: JsonRecord): Promise<T> {
         });
       },
     );
-    request.on("timeout", () =>
-      request.destroy(new Error("Task control timed out")),
-    );
+    if (timeoutMs !== undefined)
+      request.on("timeout", () =>
+        request.destroy(new Error("Task control timed out")),
+      );
     request.on("error", reject);
     request.end(content);
   });

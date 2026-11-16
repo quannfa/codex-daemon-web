@@ -63,6 +63,45 @@ export class SharedConversationGateway {
     private readonly connect:()=>Promise<SharedRpc>=()=>AppServerRpc.connect(),
     private readonly writer:typeof threadWriter=threadWriter,
     private readonly uploads?:SharedUploads){}
+  private async ensureAttachmentRoot(
+    grant:ShareGrant,
+    rpc:SharedRpc,
+    root:string,
+  ){
+    const current=await rpc.call("thread/resume",{threadId:grant.threadId,excludeTurns:true});
+    if(current.thread?.id!==grant.threadId)throw new ShareError(404,"Conversation unavailable.");
+    const existing=Array.isArray(current.runtimeWorkspaceRoots)
+      ? current.runtimeWorkspaceRoots.filter((value:unknown):value is string=>typeof value==="string"&&value.trim().length>0)
+      : [];
+    const environments=Array.isArray(current.thread.environments)?current.thread.environments:[];
+    const primary=obj(environments[0]);
+    const environmentRoots=Array.isArray(primary.runtimeWorkspaceRoots)
+      ? primary.runtimeWorkspaceRoots.filter((value:unknown):value is string=>typeof value==="string"&&value.trim().length>0)
+      : [];
+    const configured=[...existing,...environmentRoots].filter((value,index,array)=>array.indexOf(value)===index);
+    if(configured.includes(root))return;
+    if(current.thread.status?.type==="active")
+      throw new ShareError(409,"The conversation is running. Wait for its current turn to finish before sending an attachment.");
+    const cwd=str(current.cwd)||str(current.thread.cwd);
+    const roots=[...configured,...(cwd?[cwd]:[]),root].filter((value,index,array)=>array.indexOf(value)===index);
+    await rpc.call("thread/unsubscribe",{threadId:grant.threadId});
+    const resumed=await rpc.call("thread/resume",{
+      threadId:grant.threadId,
+      excludeTurns:true,
+      runtimeWorkspaceRoots:roots,
+    });
+    const resumedEnvironments=Array.isArray(resumed.thread?.environments)?resumed.thread.environments:[];
+    const resumedPrimary=obj(resumedEnvironments[0]);
+    const reportedRoots=Array.isArray(resumed.runtimeWorkspaceRoots)
+      ? resumed.runtimeWorkspaceRoots.filter((value:unknown):value is string=>typeof value==="string")
+      : Array.isArray(resumedPrimary.runtimeWorkspaceRoots)
+        ? resumedPrimary.runtimeWorkspaceRoots.filter((value:unknown):value is string=>typeof value==="string")
+        : [];
+    if(reportedRoots.includes(root))return;
+    if(resumed.thread?.status?.type==="active")
+      throw new ShareError(409,"The conversation started a turn while its attachment directory was being enabled. Try again after it finishes.");
+    throw new ShareError(503,"The conversation could not enable its attachment directory.");
+  }
   async verify(threadId:string){
     const rpc=await this.connect();
     try{
@@ -145,17 +184,32 @@ export class SharedConversationGateway {
         if(attachmentIds.length&&!this.uploads)throw new ShareError(503,"Attachments are unavailable.");
         const input:Obj[]=text?[{type:"text",text,text_elements:[]}]:[];
         if(attachmentIds.length)input.push(...await this.uploads!.input(grant,attachmentIds));
+        const attachmentRoot=attachmentIds.length?this.uploads!.runtimeWorkspaceRoot(grant):null;
         let owner=this.writer(grant.threadId);
+        let attachmentRootReady=false;
         if(!owner){
           rpc=this.keepers.get(grant.threadId)?.rpc;
           if(!rpc){
             if(this.keepers.size>=32)throw new ShareError(503,"Shared conversations are busy. Please try later.");
             rpc=await this.connect();
             // Bind only this stored thread; preserve all existing settings.
-            const resumed=await rpc.call("thread/resume",{threadId:grant.threadId,excludeTurns:true});
-            if(resumed.thread?.id!==grant.threadId)throw new ShareError(404,"Conversation unavailable.");
+            if(attachmentRoot){
+              await this.ensureAttachmentRoot(grant,rpc,attachmentRoot);
+              attachmentRootReady=true;
+            }
+            else{
+              const resumed=await rpc.call("thread/resume",{threadId:grant.threadId,excludeTurns:true});
+              if(resumed.thread?.id!==grant.threadId)throw new ShareError(404,"Conversation unavailable.");
+            }
             this.retain(grant.threadId,rpc);
           }
+        }
+        if(attachmentRoot){
+          const sharedRpc:SharedRpc=owner
+            ? {call:async <T=Obj>(method:string,params?:Obj)=>(await owner!.call(method,params??{})) as T,close:()=>{}}
+            : rpc!;
+          if(!attachmentRootReady)
+            await this.ensureAttachmentRoot(grant,sharedRpc,attachmentRoot);
         }
         this.shares.active(grant.id);
         attempted=true;

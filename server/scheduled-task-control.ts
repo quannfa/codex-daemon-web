@@ -16,9 +16,90 @@ type ControlRequest = {
   id?: unknown;
   includeArchived?: unknown;
   task?: ScheduledTaskInput;
+  durationMs?: unknown;
+  until?: unknown;
+  reason?: unknown;
 };
 
 const maxRequestBytes = 64 * 1024;
+export const MIN_WAIT_MS = 100;
+export const MAX_WAIT_MS = 48 * 60 * 60 * 1000;
+
+export type ParsedWait = {
+  durationMs: number;
+  until: string;
+  reason: string;
+};
+
+export function parseWaitRequest(request: ControlRequest, now = Date.now()): ParsedWait {
+  const hasDuration = request.durationMs !== undefined;
+  const hasUntil = request.until !== undefined;
+  if (hasDuration === hasUntil)
+    throw new TaskValidationError("Provide exactly one of durationMs or until");
+
+  let durationMs: number;
+  let until: string;
+  if (hasDuration) {
+    if (
+      typeof request.durationMs !== "number" ||
+      !Number.isSafeInteger(request.durationMs) ||
+      request.durationMs < MIN_WAIT_MS ||
+      request.durationMs > MAX_WAIT_MS
+    ) {
+      throw new TaskValidationError(
+        `durationMs must be an integer from ${MIN_WAIT_MS} to ${MAX_WAIT_MS}`,
+      );
+    }
+    durationMs = request.durationMs;
+    until = new Date(now + durationMs).toISOString();
+  } else {
+    if (typeof request.until !== "string")
+      throw new TaskValidationError("until must be an ISO-8601 timestamp");
+    const timestamp = Date.parse(request.until);
+    if (!Number.isFinite(timestamp))
+      throw new TaskValidationError("until must be an ISO-8601 timestamp");
+    durationMs = timestamp - now;
+    if (
+      !Number.isSafeInteger(durationMs) ||
+      durationMs < MIN_WAIT_MS ||
+      durationMs > MAX_WAIT_MS
+    ) {
+      throw new TaskValidationError(
+        `until must be between ${MIN_WAIT_MS} ms and ${MAX_WAIT_MS} ms in the future`,
+      );
+    }
+    until = new Date(timestamp).toISOString();
+  }
+
+  const reason = typeof request.reason === "string" ? request.reason.trim() : "";
+  if (reason.length > 1000)
+    throw new TaskValidationError("reason must be 1,000 characters or shorter");
+  return { durationMs, until, reason };
+}
+
+export function waitForDuration(
+  durationMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Wait cancelled"));
+      return;
+    }
+    let timer: NodeJS.Timeout;
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(new Error("Wait cancelled"));
+    };
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    timer = setTimeout(finish, durationMs);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 export async function startScheduledTaskControlSocket(
   store: ScheduledTaskStore,
@@ -44,10 +125,23 @@ export async function startScheduledTaskControlSocket(
       response.writeHead(404).end(JSON.stringify({ error: "Route not found" }));
       return;
     }
+    const controller = new AbortController();
+    let responded = false;
+    const abort = () => {
+      if (!responded) controller.abort();
+    };
+    request.once("aborted", abort);
+    response.once("close", abort);
     void readRequest(request)
-      .then((body) => handleControlRequest(store, scheduler, body))
-      .then((result) => response.writeHead(200).end(JSON.stringify({ result })))
+      .then((body) => handleControlRequest(store, scheduler, body, controller.signal))
+      .then((result) => {
+        responded = true;
+        if (!response.destroyed)
+          response.writeHead(200).end(JSON.stringify({ result }));
+      })
       .catch((error: unknown) => {
+        responded = true;
+        if (controller.signal.aborted || response.destroyed) return;
         const status =
           error instanceof TaskValidationError
             ? 400
@@ -126,9 +220,20 @@ async function handleControlRequest(
   store: ScheduledTaskStore,
   scheduler: ScheduledTaskScheduler,
   request: ControlRequest,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const id = typeof request.id === "string" ? request.id : "";
   switch (request.operation) {
+    case "wait": {
+      const parsed = parseWaitRequest(request);
+      await waitForDuration(parsed.durationMs, signal);
+      return {
+        status: "completed",
+        waitedMs: parsed.durationMs,
+        until: parsed.until,
+        ...(parsed.reason ? { reason: parsed.reason } : {}),
+      };
+    }
     case "validateThread": {
       const threadId=await store.validateThreadId(requiredId(id));
       return {threadId,conversationLink:"codex://threads/"+threadId};

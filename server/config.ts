@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { dirname, join, resolve } from "node:path";
+import { parseTurnCompletionTimeout } from "./turn-completion-timeout.js";
 
 export type DaemonEndpoint =
   | { kind: "unix"; path: string; label: string }
@@ -173,6 +174,10 @@ export const config = {
     process.env.CODEX_WEB_TASKS_FILE ||
       join(dirname(tokenPath), "scheduled-tasks.json"),
   ),
+  sessionUploadsPath: resolve(
+    process.env.CODEX_WEB_SESSION_UPLOADS_FILE ||
+      join(dirname(tokenPath), "session-uploads.json"),
+  ),
   scheduledTasksSocketPath: resolve(
     process.env.CODEX_WEB_TASKS_SOCKET_FILE ||
       join(dirname(tokenPath), "scheduled-tasks.sock"),
@@ -184,4 +189,7 @@ export const config = {
   initializeTimeoutMs: 10000,
   sessionMaxAgeMs: 180 * 24 * 60 * 60 * 1000,
   sessionRenewalWindowMs: 30 * 24 * 60 * 60 * 1000,
+  turnCompletionTimeoutMs: parseTurnCompletionTimeout(
+    process.env.CODEX_WEB_TURN_COMPLETION_TIMEOUT_MS,
+  ),
 };

@@ -1,5 +1,7 @@
 import WebSocket from "ws";
 import { connectDaemon } from "./daemon.js";
+import { config } from "./config.js";
+import { buildScheduledTurnPrompt } from "./scheduled-turn-instructions.js";
 
 type JsonRecord = Record<string, unknown>;
 type RpcError = { code?: number; message?: string; data?: unknown };
@@ -115,7 +117,13 @@ export class AppServerRpc {
 
     const turnParams: JsonRecord = {
       threadId,
-      input: [{ type: "text", text: task.prompt, text_elements: [] }],
+      input: [
+        {
+          type: "text",
+          text: buildScheduledTurnPrompt(task.prompt),
+          text_elements: [],
+        },
+      ],
     };
     if (task.model) turnParams.model = task.model;
     if (task.reasoningEffort) turnParams.effort = task.reasoningEffort;
@@ -362,11 +370,11 @@ export class AppServerRpc {
           this.completionWaiters.delete(turnId);
           reject(
             new Error(
-              "Codex did not complete the scheduled turn within 12 hours",
+              "Codex did not complete the scheduled turn before the configured completion timeout",
             ),
           );
         },
-        12 * 60 * 60 * 1000,
+        config.turnCompletionTimeoutMs,
       );
       timeout.unref();
       this.completionWaiters.set(turnId, {

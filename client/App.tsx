@@ -52,9 +52,11 @@ import MessageTimestamp from "./MessageTimestamp";
 import {mergeItemTimestamps} from "./message-time";
 import ThreadGoalPanel from "./ThreadGoalPanel";
 import { FileReferenceContext, MarkdownContent, LocalResourceImage } from "./ResourceMarkdown";
+import FileReferenceViewer from "./FileReferenceViewer";
 import { localReferencePath } from "./resource-paths";
 import {clientUUID} from "./client-uuid";
-import {codexThreadLink,forkAtMessage} from "./conversation-actions";
+import {codexThreadLink,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn} from "./conversation-actions";
+import {ensureRuntimeWorkspaceRoot,hasRuntimeWorkspaceRoot,runtimeWorkspaceRootsFromResponse,threadResumeIsActive} from "./thread-runtime-roots";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import ThreadPluginOptions from "./ThreadPluginOptions";
 import SidebarQuota from "./SidebarQuota";
@@ -73,6 +75,7 @@ import type {
   ScheduledTask,
   ThreadTokenUsage,
   McpServerElicitationResponse,
+  McpServerStatusListResponse,
   UserInput,
 } from "./types";
 import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, buildProjectCreateParams, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
@@ -123,8 +126,13 @@ type ConversationHistoryState = {
 type PendingUpload = {
   id: string;
   name: string;
-  dataUrl: string;
   size: number;
+  mime: string;
+  kind: "image" | "file";
+  runtimeWorkspaceRoot: string;
+  previewUrl?: string;
+  input: UserInput[];
+  status: "uploading" | "ready";
 };
 type ThemeChoice = "system" | "light" | "dark";
 type PushSetupState =
@@ -132,7 +140,7 @@ type PushSetupState =
 type AppNotice = { tone: "info" | "error" | "success"; text: string };
 
 type ComposerCompletionTarget = {
-  kind: "command" | "file" | "skill" | "mention";
+  kind: "command" | "file" | "skill" | "mention" | "mcp";
   start: number;
   end: number;
   query: string;
@@ -140,7 +148,7 @@ type ComposerCompletionTarget = {
 type ComposerCompletionItem =
   | {
       kind: "command";
-      command: "/compact" | "/new";
+      command: "/compact" | "/mcp" | "/new";
       description: string;
       disabled?: boolean;
       disabledReason?: string;
@@ -162,6 +170,12 @@ type ComposerCompletionItem =
       name: string;
       id: string;
       description: string;
+    }
+  | {
+      kind: "mcp";
+      name: string;
+      description: string;
+      toolCount: number;
     };
 type SelectedSkillReference = { name: string; path: string };
 type AgentIdentity = { glyph: string; color: number };
@@ -632,10 +646,8 @@ const queuedSteerRecoveryKey = "codex-daemon-web.queued-steer-recovery";
 const themeChoiceKey = "codex-daemon-web-theme";
 const completionSoundKey = "codex-daemon-web-completion-sound";
 const maxTurnRequestBytes = 900 * 1024;
-const maxAttachmentBytes = 700 * 1024;
-const maxCompressedImageBytes = 320 * 1024;
-const maxImageFileBytes = 20 * 1024 * 1024;
-const maxImageCount = 4;
+const maxAttachmentCount = 10;
+const maxAttachmentFileBytes = 32 * 1024 * 1024;
 
 function readQueuedSteerRecovery(): QueuedSteerRecovery | null {
   try {
@@ -1462,9 +1474,33 @@ function userInputFromDraft(
   }
   for (const skill of uniqueSkills.values())
     input.push({ type: "skill", name: skill.name, path: skill.path });
-  for (const upload of uploads)
-    input.push({ type: "image", url: upload.dataUrl, detail: "auto" });
+  for (const upload of uploads) input.push(...upload.input);
   return input;
+}
+
+function runtimeWorkspaceRootsForMessage(
+  details: ThreadDetails | null,
+  thread: ThreadSummary | null,
+  cwd: string,
+  uploads: PendingUpload[],
+  sessionRoot: string | undefined,
+): string[] {
+  const configured = details?.runtimeWorkspaceRoots;
+  const fallback = cwd.trim() || thread?.cwd?.trim() || details?.cwd?.trim() || "";
+  const roots = Array.isArray(configured)
+    ? [...configured]
+    : fallback
+      ? [fallback]
+      : [];
+  const candidates = [
+    sessionRoot,
+    ...uploads.map((upload) => upload.runtimeWorkspaceRoot),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue;
+    if (!roots.includes(candidate)) roots.push(candidate);
+  }
+  return roots.filter((root) => typeof root === "string" && root.trim());
 }
 
 function completionTargetAt(
@@ -1472,6 +1508,16 @@ function completionTargetAt(
   caret: number,
 ): ComposerCompletionTarget | null {
   const prefix = text.slice(0, caret);
+  const mcpMatch = /^(\s*)\/mcp(?:\s+([^\s]*))?$/.exec(prefix);
+  if (mcpMatch) {
+    const following = /^[^\s]*/.exec(text.slice(caret))?.[0] ?? "";
+    return {
+      kind: "mcp",
+      start: mcpMatch[1].length,
+      end: caret + following.length,
+      query: mcpMatch[2] ?? "",
+    };
+  }
   const commandMatch = /^(\s*)\/([^\s]*)$/.exec(prefix);
   if (commandMatch) {
     const following = /^[^\s]*/.exec(text.slice(caret))?.[0] ?? "";
@@ -1496,15 +1542,75 @@ function completionTargetAt(
 }
 
 const composerCommands: Array<{
-  command: "/new" | "/compact";
+  command: "/new" | "/compact" | "/mcp";
   description: string;
 }> = [
   { command: "/new", description: "Start a new conversation" },
   { command: "/compact", description: "Summarize this conversation" },
+  { command: "/mcp", description: "Add a hint to use an MCP server" },
 ];
 
 function isComposerCommandWithArguments(text: string): boolean {
   return /^\/(?:new|compact)\s+\S/u.test(text.trim());
+}
+
+function mcpUsageHint(serverName: string): string {
+  return `Use MCP server ${JSON.stringify(serverName)} for the request below:`;
+}
+
+function expandMcpCommand(text: string):
+  | { text: string; error?: undefined }
+  | { text: string; error: string } {
+  const match = /^\s*\/mcp(?:\s+([^\s]+)([\s\S]*)|\s*)$/u.exec(text);
+  if (!match) return { text };
+  const serverName = match[1]?.trim();
+  if (!serverName)
+    return {
+      text,
+      error: "Choose an MCP server after /mcp, for example /mcp rpe-188.",
+    };
+  const request = match[2].trim();
+  return {
+    text: `${mcpUsageHint(serverName)}${request ? `\n${request}` : ""}`,
+  };
+}
+
+type McpCompletionItem = Extract<ComposerCompletionItem, { kind: "mcp" }>;
+
+async function loadMcpCompletionItems(
+  client: RpcClient,
+): Promise<McpCompletionItem[]> {
+  const servers = new Map<string, McpCompletionItem>();
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const response = await client.request<McpServerStatusListResponse>(
+      "mcpServerStatus/list",
+      cursor ? { cursor } : {},
+    );
+    for (const server of response.data ?? []) {
+      const name = server.name?.trim();
+      if (!name || servers.has(name)) continue;
+      const toolCount = Object.keys(server.tools ?? {}).length;
+      const toolLabel = server.toolsError
+        ? "Tools unavailable"
+        : `${toolCount} tool${toolCount === 1 ? "" : "s"}`;
+      const description = [
+        server.serverInfo?.title?.trim() ||
+          server.serverInfo?.description?.trim() ||
+          undefined,
+        toolLabel,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      servers.set(name, { kind: "mcp", name, description, toolCount });
+    }
+    const nextCursor = response.nextCursor?.trim() || "";
+    if (!nextCursor || nextCursor === cursor) break;
+    cursor = nextCursor;
+  }
+  return [...servers.values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
 }
 
 const agentIdentityGlyphs = ["✺", "✿", "⚙", "✣", "✦", "❖"];
@@ -1558,26 +1664,22 @@ function containsComposerToken(text: string, token: string): boolean {
   return false;
 }
 
-function imagesFromClipboard(data: DataTransfer): {
-  containsImage: boolean;
+function filesFromClipboard(data: DataTransfer): {
+  containsFile: boolean;
   files: File[];
 } {
-  const items = Array.from(data.items).filter(
-    (item) => item.kind === "file" && item.type.startsWith("image/"),
-  );
+  const items = Array.from(data.items).filter((item) => item.kind === "file");
   const itemFiles = items.flatMap((item) => {
     const file = item.getAsFile();
     return file ? [file] : [];
   });
-  const fileListImages = Array.from(data.files).filter((file) =>
-    file.type.startsWith("image/"),
-  );
+  const fileListFiles = Array.from(data.files);
   const sameClipboardFile = (left: File, right: File) =>
     left.type === right.type &&
     left.size === right.size &&
     left.lastModified === right.lastModified;
   const matchedItemFiles = new Set<number>();
-  const additionalFiles = fileListImages.filter((file) => {
+  const additionalFiles = fileListFiles.filter((file) => {
     const matchingIndex = itemFiles.findIndex(
       (itemFile, index) =>
         !matchedItemFiles.has(index) && sameClipboardFile(file, itemFile),
@@ -1588,7 +1690,7 @@ function imagesFromClipboard(data: DataTransfer): {
   });
 
   return {
-    containsImage: items.length > 0 || fileListImages.length > 0,
+    containsFile: items.length > 0 || fileListFiles.length > 0,
     files: [...itemFiles, ...additionalFiles],
   };
 }
@@ -1613,68 +1715,10 @@ function shortError(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      typeof reader.result === "string"
-        ? resolve(reader.result)
-        : reject(new Error("Could not read the compressed image."));
-    reader.onerror = () =>
-      reject(new Error("Could not read the compressed image."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-function canvasToJpeg(
-  canvas: HTMLCanvasElement,
-  quality: number,
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) =>
-        blob
-          ? resolve(blob)
-          : reject(new Error("Could not compress this image.")),
-      "image/jpeg",
-      quality,
-    );
-  });
-}
-
-async function compressImage(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file);
-  try {
-    const maxDimension = 2048;
-    let scale = Math.min(
-      1,
-      maxDimension / Math.max(bitmap.width, bitmap.height),
-    );
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Image compression is unavailable.");
-
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-      context.fillStyle = "#fff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      const quality = Math.max(0.3, 0.86 - (attempt % 5) * 0.12);
-      const blob = await canvasToJpeg(canvas, quality);
-      const dataUrl = await blobToDataUrl(blob);
-      if (
-        new TextEncoder().encode(dataUrl).byteLength <= maxCompressedImageBytes
-      )
-        return dataUrl;
-      if (attempt % 5 === 4) scale *= 0.78;
-    }
-    throw new Error(
-      `${file.name} could not be compressed under the image limit.`,
-    );
-  } finally {
-    bitmap.close();
-  }
+function isInProgressForkError(error: unknown): boolean {
+  return /lastTurnId[\s\S]*in-progress turn|in-progress turn[\s\S]*lastTurnId/i.test(
+    shortError(error),
+  );
 }
 
 function serializedRequestBytes(
@@ -1687,6 +1731,85 @@ function serializedRequestBytes(
     params,
   });
   return new TextEncoder().encode(request).byteLength;
+}
+
+function isUserInputPart(value: unknown): value is UserInput {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+async function uploadSessionAttachment(
+  id: string,
+  file: File,
+): Promise<{
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  kind: "image" | "file";
+  runtimeWorkspaceRoot: string;
+  input: UserInput[];
+}> {
+  const response = await fetch(`/api/uploads/${encodeURIComponent(id)}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-File-Name": encodeURIComponent(file.name || "attachment"),
+    },
+    body: file,
+  });
+  const data: unknown = await response.json().catch(() => null);
+  if (!response.ok || !isRecord(data))
+    throw new Error(
+      isRecord(data) && typeof data.error === "string"
+        ? data.error
+        : "Could not upload this attachment.",
+    );
+  const input = Array.isArray(data.input)
+    ? data.input.filter(isUserInputPart)
+    : [];
+  if (
+    typeof data.id !== "string" ||
+    typeof data.name !== "string" ||
+    typeof data.size !== "number" ||
+    typeof data.mime !== "string" ||
+    typeof data.runtimeWorkspaceRoot !== "string" ||
+    (data.kind !== "image" && data.kind !== "file") ||
+    !input.length
+  )
+    throw new Error("The upload service returned an invalid attachment.");
+  return {
+    id: data.id,
+    name: data.name,
+    size: data.size,
+    mime: data.mime,
+    kind: data.kind,
+    runtimeWorkspaceRoot: data.runtimeWorkspaceRoot,
+    input,
+  };
+}
+
+async function retainSessionUploads(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const response = await fetch("/api/uploads/retain", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const data: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(
+      isRecord(data) && typeof data.error === "string"
+        ? data.error
+        : "Could not keep the attachments for this message.",
+    );
+}
+
+function formatAttachmentSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 function safeImageUrl(value: unknown): string | null {
@@ -1885,6 +2008,7 @@ function WorkspaceApp() {
   const [appearance, setAppearance] = useAppearance();
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState<DaemonStatus | null>(null);
+  const [sessionUploadRoot, setSessionUploadRoot] = useState<string | undefined>();
   const [statusError, setStatusError] = useState("");
   const [token, setToken] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -2094,6 +2218,10 @@ function WorkspaceApp() {
   const pluginsCacheRef=useRef(
     new Map<string,Extract<ComposerCompletionItem,{kind:"plugin"}>[]>(),
   );
+  const mcpCompletionCacheRef = useRef<McpCompletionItem[] | null>(null);
+  const mcpCompletionRequestRef = useRef<Promise<McpCompletionItem[]> | null>(
+    null,
+  );
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const uploadsRef = useRef(uploads);
   const updateUploads = (
@@ -2145,7 +2273,11 @@ function WorkspaceApp() {
     Record<string, string[]>
   >({});
   const { client, connection, connectionMessage, attach, detach } = useRpc();
-  useEffect(()=>{pluginsCacheRef.current.clear();},[client]);
+  useEffect(() => {
+    pluginsCacheRef.current.clear();
+    mcpCompletionCacheRef.current = null;
+    mcpCompletionRequestRef.current = null;
+  }, [client]);
   const handlersRef = useRef({
     onNotification: (_method: string, _params: Record<string, unknown>) => {},
     onServerRequest: (_request: ApprovalPrompt) => {},
@@ -2455,12 +2587,18 @@ function WorkspaceApp() {
       });
       if (response.status === 401) {
         setStatus({ authenticated: false, daemon: { available: false } });
+        setSessionUploadRoot(undefined);
         return;
       }
       if (!response.ok)
         throw new Error(`Status request failed (${response.status}).`);
       const result = (await response.json()) as DaemonStatus;
       setStatus(result);
+      setSessionUploadRoot(
+        typeof result.runtimeWorkspaceRoot === "string"
+          ? result.runtimeWorkspaceRoot
+          : undefined,
+      );
     } catch (error) {
       setStatusError(shortError(error));
     } finally {
@@ -2516,6 +2654,7 @@ function WorkspaceApp() {
     historyHandledRef.current = `${window.location.href}|${JSON.stringify(window.history.state)}`;
     sessionStorage.removeItem(selectedThreadKey);
     setStatus({ authenticated: false, daemon: { available: false } });
+    setSessionUploadRoot(undefined);
     setStatusError("");
     setAuthError(
       "Your session expired. Sign in again. Your unsent draft is still here.",
@@ -3276,7 +3415,7 @@ function WorkspaceApp() {
       };
       liveItemsRef.current.clear();
       try {
-        const response = await rpc.request<
+        let response = await rpc.request<
           ThreadDetails & {
             thread: ThreadDetails["thread"] & {
               id: string;
@@ -3291,6 +3430,23 @@ function WorkspaceApp() {
           threadId,
           excludeTurns: true,
         });
+        if (
+          sessionUploadRoot &&
+          !hasRuntimeWorkspaceRoot(response, sessionUploadRoot)
+        ) {
+          try {
+            const enriched = await ensureRuntimeWorkspaceRoot(
+              rpc,
+              threadId,
+              sessionUploadRoot,
+              response,
+            );
+            if (enriched.thread?.id === threadId) response = enriched;
+          } catch {
+            // The current response remains usable. Attachment sends will
+            // wait for an idle thread if the root was not applied.
+          }
+        }
         if (version !== loadVersionRef.current) return;
         const nameUpdate = threadNameUpdatesRef.current.get(threadId);
         const confirmedName =
@@ -3462,7 +3618,7 @@ function WorkspaceApp() {
         });
       }
     },
-    [refreshThreadQueue, updateThreadTrail],
+    [refreshThreadQueue, sessionUploadRoot, updateThreadTrail],
   );
 
   const navigateToThread = useCallback(
@@ -3549,19 +3705,55 @@ function WorkspaceApp() {
     }
   };
   const forkConversationAtMessage = async (entry:TimelineItem) => {
-    if(!client||!selectedThread?.id||!entry.turnId||entry.streaming||forkBusy)return;
+    if(!client||!selectedThread?.id||!entry.turnId||forkBusy)return;
     if(entry.item.type!=="userMessage"&&entry.item.type!=="agentMessage")return;
+    const kind=entry.item.type;
+    const activeAssistantTurn=isActiveAssistantTurn(entry.turnId,kind,activeTurnId);
+    const sourceDetails = threadDetails ?? {
+      model: selectedThread.model,
+      reasoningEffort: selectedThread.reasoningEffort,
+      cwd: selectedThread.cwd,
+    };
+    const forkSettings = forkSettingsFromThread(sourceDetails);
+    const sourceDisabledPluginIds = Array.isArray(threadDetails?.disabledPluginIds)
+      ? [...threadDetails.disabledPluginIds]
+      : null;
     setForkBusy(true);
     try{
-      const params=forkAtMessage(selectedThread.id,entry.turnId,entry.item.type);
-      const result=await client.request<{thread:{id:string}}>("thread/fork",params);
+      const requestFork=(activeTurn:boolean)=>client.request<{thread:{id:string}}>(
+        "thread/fork",
+        forkAtMessage(selectedThread.id,entry.turnId!,kind,{activeTurn,settings:forkSettings}),
+      );
+      let result;
+      try{
+        result=await requestFork(activeAssistantTurn);
+      }catch(error){
+        // The active-turn notification can race with a click. The daemon's
+        // validation is authoritative, so retry with its mid-turn fork form.
+        if(!activeAssistantTurn&&kind==="agentMessage"&&isInProgressForkError(error)){
+          setActiveTurnId(entry.turnId);
+          setTurnActive(true);
+          result=await requestFork(true);
+        }else throw error;
+      }
       const id=result?.thread?.id;
       if(!id)throw new Error("Codex did not return a forked thread.");
+      if(sourceDisabledPluginIds)
+        await client.request("thread/settings/update",{
+          threadId:id,
+          disabledPluginIds:sourceDisabledPluginIds,
+        });
       await navigateToThread(id,[],"push");
       void refreshThreads(client,false,false);
       setNotice({tone:"success",text:"Conversation fork created."});
     }catch(error){
-      setNotice({tone:"error",text:"Could not fork conversation: "+shortError(error)});
+      if(isInProgressForkError(error)){
+        setActiveTurnId(entry.turnId);
+        setTurnActive(true);
+        setNotice({tone:"info",text:"The active turn changed while forking. Please try Fork here again."});
+      }else{
+        setNotice({tone:"error",text:"Could not fork conversation: "+shortError(error)});
+      }
     }finally{setForkBusy(false);}
   };
 
@@ -3844,6 +4036,7 @@ function WorkspaceApp() {
       writeHistoryRoute(newRoute, [], "replace");
       historyHandledRef.current = `${window.location.href}|${JSON.stringify(window.history.state)}`;
       setStatus({ authenticated: false, daemon: { available: false } });
+      setSessionUploadRoot(undefined);
       setThreads([]);
       setSelectedThread(null);
       setThreadTokenUsage(null);
@@ -4168,6 +4361,40 @@ function WorkspaceApp() {
     let sentFileSearch = false;
     const timer = window.setTimeout(
       () => {
+        if (target.kind === "mcp") {
+          const cached = mcpCompletionCacheRef.current;
+          const servers = cached
+            ? Promise.resolve(cached)
+            : (mcpCompletionRequestRef.current ??=
+                loadMcpCompletionItems(client)
+                  .then((items) => {
+                    mcpCompletionCacheRef.current = items;
+                    return items;
+                  })
+                  .finally(() => {
+                    mcpCompletionRequestRef.current = null;
+                  }));
+          void servers
+            .then((items) => {
+              if (completionRequestRef.current !== requestId) return;
+              const query = target.query.toLocaleLowerCase();
+              setCompletionItems(
+                items.filter(
+                  (server) =>
+                    !query ||
+                    server.name.toLocaleLowerCase().includes(query) ||
+                    server.description.toLocaleLowerCase().includes(query),
+                ),
+              );
+              setCompletionLoading(false);
+            })
+            .catch((error: unknown) => {
+              if (completionRequestRef.current !== requestId) return;
+              setCompletionError(shortError(error));
+              setCompletionLoading(false);
+            });
+          return;
+        }
         if (target.kind === "mention") {
           const cacheKey=completionCwd||"__global__";
           const cached=pluginsCacheRef.current.get(cacheKey);
@@ -4343,7 +4570,9 @@ function WorkspaceApp() {
       return;
     if (item.kind === "command" && item.disabled) return;
     const inserted =
-      item.kind === "file"
+      item.kind === "mcp"
+        ? mcpUsageHint(item.name)
+        : item.kind === "file"
         ? /\s/.test(item.path) && !item.path.includes('"')
           ? `"${item.path}"`
           : item.path
@@ -4354,8 +4583,16 @@ function WorkspaceApp() {
             : item.command;
     const suffix = composer.slice(completionTarget.end);
     const hasSeparator = /^\s/u.test(suffix);
-    const separator = hasSeparator ? suffix : ` ${suffix}`;
-    const caret = completionTarget.start + inserted.length + (hasSeparator?0:1);
+    const separator =
+      item.kind === "mcp"
+        ? `\n${suffix.trimStart()}`
+        : hasSeparator
+          ? suffix
+          : ` ${suffix}`;
+    const caret =
+      completionTarget.start +
+      inserted.length +
+      (item.kind === "mcp" ? 1 : hasSeparator ? 0 : 1);
     const nextText =
       composer.slice(0, completionTarget.start) + inserted + separator;
     if (item.kind === "skill")
@@ -4366,7 +4603,16 @@ function WorkspaceApp() {
     dismissedCompletionRef.current =
       item.kind === "skill" ? { kind: "skill", token: inserted } : null;
     setComposer(nextText);
-    setCompletionTarget(null);
+    setCompletionTarget(
+      item.kind === "command" && item.command === "/mcp"
+        ? {
+            kind: "mcp",
+            start: completionTarget.start,
+            end: completionTarget.start + inserted.length + separator.length,
+            query: "",
+          }
+        : null,
+    );
     setCompletionItems([]);
     setCompletionIndex(0);
     requestAnimationFrame(() => {
@@ -4448,6 +4694,13 @@ function WorkspaceApp() {
   ) => {
     event?.preventDefault();
     const commandText = composer.trim();
+    const composerSourceAtSend = composer;
+    const mcpExpansion = expandMcpCommand(composer);
+    if (mcpExpansion.error) {
+      setNotice({ tone: "info", text: mcpExpansion.error });
+      return;
+    }
+    const composerForSend = mcpExpansion.text;
     if (commandText === "/new") {
       runNewConversationCommand();
       return;
@@ -4556,11 +4809,18 @@ function WorkspaceApp() {
       compactingThreadRef.current ||
       queueSteerInFlightRef.current ||
       compressingUploadsRef.current ||
-      (!composer.trim() && uploads.length === 0) ||
+      (!composerForSend.trim() && uploads.length === 0) ||
       !client ||
       connection !== "online"
     )
       return;
+    if (uploads.some((upload) => upload.status !== "ready")) {
+      setNotice({
+        tone: "info",
+        text: "Wait for the attachments to finish uploading before sending.",
+      });
+      return;
+    }
     if (loadingThread || selectedRef.current !== (selectedThread?.id ?? null)) {
       setNotice({
         tone: "info",
@@ -4581,15 +4841,80 @@ function WorkspaceApp() {
     setNotice(null);
     const selectionAtSend = selectedRef.current;
     const loadVersionAtSend = loadVersionRef.current;
-    const composerAtSend = composer;
+    const composerAtSend = composerForSend;
     const uploadsAtSend = [...uploads];
     const selectedSkillsAtSend = [...selectedSkillsRef.current];
+    let runtimeWorkspaceRoots = runtimeWorkspaceRootsForMessage(
+      threadDetails,
+      selectedThread,
+      cwd,
+      uploadsAtSend,
+      sessionUploadRoot,
+    );
     setCompletionTarget(null);
     let threadId = selectedThread?.id;
     const threadIdAtSend = threadId ?? null;
     const turnIdAtSend = activeTurnId;
     let optimisticId:string|null=null;
     try {
+      if (uploadsAtSend.length > 0 && threadIdAtSend) {
+        const attachmentRoot =
+          sessionUploadRoot ||
+          uploadsAtSend.find((upload) => upload.runtimeWorkspaceRoot)?.runtimeWorkspaceRoot ||
+          "";
+        if (
+          attachmentRoot &&
+          !threadDetails?.runtimeWorkspaceRoots?.includes(attachmentRoot)
+        ) {
+          if (hasActiveTurn) {
+            setNotice({
+              tone: "info",
+              text: "Wait for the current turn to finish before sending attachments.",
+            });
+            return;
+          }
+          let refreshed;
+          try {
+            refreshed = await ensureRuntimeWorkspaceRoot(
+              client,
+              threadIdAtSend,
+              attachmentRoot,
+            );
+            if (
+              threadResumeIsActive(refreshed) ||
+              !hasRuntimeWorkspaceRoot(refreshed, attachmentRoot)
+            )
+              throw new Error(
+                "The conversation is still active and cannot enable its attachment directory yet.",
+              );
+          } catch (error) {
+            setNotice({
+              tone: "info",
+              text: `Wait for the conversation to finish before sending attachments. ${shortError(error)}`,
+            });
+            return;
+          }
+          const refreshedRoots = runtimeWorkspaceRootsFromResponse(refreshed);
+          runtimeWorkspaceRoots = [
+            ...refreshedRoots,
+            ...runtimeWorkspaceRoots,
+          ].filter((root, index, roots) => roots.indexOf(root) === index);
+          setThreadDetails((current) =>
+            current
+              ? { ...current, runtimeWorkspaceRoots: refreshedRoots }
+              : current,
+          );
+        }
+      }
+      try {
+        await retainSessionUploads(uploadsAtSend.map((upload) => upload.id));
+      } catch (error) {
+        setNotice({
+          tone: "error",
+          text: `Could not keep the attachments for this message. ${shortError(error)}`,
+        });
+        return;
+      }
       const input = userInputFromDraft(
         composerAtSend,
         uploadsAtSend,
@@ -4628,8 +4953,13 @@ function WorkspaceApp() {
           id:clientUserMessageId,threadId:threadIdAtSend,
           kind:"steer",status:"sending",input,
           attachments:uploadsAtSend,selectedSkills:selectedSkillsAtSend,
-        },composerAtSend);
-        await client.request<{ turnId: string }>("turn/steer", steerParams);
+        },composerSourceAtSend);
+        const steerResult = await client.request<
+          { turnId: string } | { turn: { id: string } }
+        >("turn/steer", steerParams);
+        const confirmedTurnId =
+          "turnId" in steerResult ? steerResult.turnId : steerResult.turn?.id;
+        if (!confirmedTurnId) throw new Error("The daemon did not confirm the direction.");
         changeOptimistic(clientUserMessageId,{status:"confirmed"});
         steerAttemptRef.current=null;
         void refreshThreads(client, archivedThreads, false);
@@ -4647,6 +4977,8 @@ function WorkspaceApp() {
         clientUserMessageId:directMessageId,
         input,
       };
+      if (runtimeWorkspaceRoots.length)
+        turnParams.runtimeWorkspaceRoots = runtimeWorkspaceRoots;
       if (model) turnParams.model = model;
       if (effort) turnParams.effort = effort;
       if (selectedThread && cwd.trim() && cwd !== selectedThread.cwd)
@@ -4686,7 +5018,7 @@ function WorkspaceApp() {
         id:directMessageId,threadId:threadIdAtSend,
         kind:"turn",status:"sending",input,
         attachments:uploadsAtSend,selectedSkills:selectedSkillsAtSend,
-      },composerAtSend);
+      },composerSourceAtSend);
 
       if (!threadId) {
         const startParams: Record<string, unknown> = {};
@@ -4695,6 +5027,8 @@ function WorkspaceApp() {
         if (newProjectId) startParams.projectId = newProjectId;
         if (approvalPolicy) startParams.approvalPolicy = approvalPolicy;
         if (sandboxMode) startParams.sandbox = sandboxMode;
+        if (runtimeWorkspaceRoots.length)
+          startParams.runtimeWorkspaceRoots = runtimeWorkspaceRoots;
         const started = await client.request<{
           thread: ThreadSummary;
           model: string;
@@ -4725,6 +5059,7 @@ function WorkspaceApp() {
         setSelectedThread(started.thread);
         setThreadDetails({
           ...started,
+          runtimeWorkspaceRoots,
           approvalPolicy: approvalPolicy || null,
           sandbox: sandboxMode
             ? {
@@ -4754,6 +5089,13 @@ function WorkspaceApp() {
       const response = await client.request<{
         turn: { id: string; status: string };
       }>("turn/start", turnParams);
+      if (runtimeWorkspaceRoots.length) {
+        setThreadDetails((current) =>
+          current
+            ? { ...current, runtimeWorkspaceRoots }
+            : current,
+        );
+      }
       changeOptimistic(directMessageId,{status:"confirmed",turnId:response.turn.id});
       if (selectedRef.current === threadId) {
         if (response.turn.status === "inProgress")
@@ -4783,6 +5125,13 @@ function WorkspaceApp() {
 
   const queueMessage = async () => {
     const commandText = composer.trim();
+    const composerSourceAtQueue = composer;
+    const mcpExpansion = expandMcpCommand(composer);
+    if (mcpExpansion.error) {
+      setNotice({ tone: "info", text: mcpExpansion.error });
+      return;
+    }
+    const composerForQueue = mcpExpansion.text;
     if (commandText === "/new") {
       runNewConversationCommand();
       return;
@@ -4824,15 +5173,47 @@ function WorkspaceApp() {
       });
       return;
     }
-    if (!composer.trim() && uploads.length === 0) return;
+    if (!composerForQueue.trim() && uploads.length === 0) return;
+    if (uploads.some((upload) => upload.status !== "ready")) {
+      setNotice({
+        tone: "info",
+        text: "Wait for the attachments to finish uploading before queueing.",
+      });
+      return;
+    }
 
     const threadIdAtQueue = selectedThread.id;
     const threadTitleAtQueue = titleFor(selectedThread);
     const loadVersionAtQueue = loadVersionRef.current;
-    const textAtQueue = composer;
+    const textAtQueue = composerForQueue;
     const uploadsAtQueue = [...uploads];
     const selectedSkillsAtQueue = [...selectedSkillsRef.current];
     setCompletionTarget(null);
+    if (uploadsAtQueue.length > 0) {
+      const attachmentRoot =
+        sessionUploadRoot ||
+        uploadsAtQueue.find((upload) => upload.runtimeWorkspaceRoot)?.runtimeWorkspaceRoot ||
+        "";
+      if (
+        attachmentRoot &&
+        !threadDetails?.runtimeWorkspaceRoots?.includes(attachmentRoot)
+      ) {
+        setNotice({
+          tone: "info",
+          text: "Wait for the current turn to finish before queueing attachments.",
+        });
+        return;
+      }
+    }
+    try {
+      await retainSessionUploads(uploadsAtQueue.map((upload) => upload.id));
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: `Could not keep the attachments for this reply. ${shortError(error)}`,
+      });
+      return;
+    }
     const input = userInputFromDraft(
       textAtQueue,
       uploadsAtQueue,
@@ -4866,7 +5247,7 @@ function WorkspaceApp() {
       id:clientUserMessageId,threadId:threadIdAtQueue,
       kind:"queue",status:"sending",input,
       attachments:uploadsAtQueue,selectedSkills:selectedSkillsAtQueue,
-    },textAtQueue);
+    },composerSourceAtQueue);
     try {
       const result = await client.request<{
         queuedSubmission: QueuedSubmission;
@@ -5447,77 +5828,85 @@ function WorkspaceApp() {
     }
   };
 
-  const addImages = async (files: FileList | File[] | null) => {
+  const addAttachments = async (files: FileList | File[] | null) => {
     if (!files?.length) return;
     const blockedReason = compressingUploadsRef.current
-      ? "Wait for the current image to finish processing before adding another."
+      ? "Wait for the current attachments to finish uploading before adding more."
       : compactingThreadRef.current
-        ? "Wait for context compaction to finish before adding an image."
+        ? "Wait for context compaction to finish before adding an attachment."
         : sending || queueingRef.current
-          ? "Wait for the current message to finish before adding an image."
+          ? "Wait for the current message to finish before adding an attachment."
           : connection !== "online"
-            ? "Connect to Codex before adding an image."
+            ? "Connect to Codex before adding an attachment."
             : loadingThread ||
                 selectedRef.current !== (selectedThread?.id ?? null)
-              ? "Wait for the selected conversation to finish loading before adding an image."
+              ? "Wait for the selected conversation to finish loading before adding an attachment."
               : selectedThread?.canAcceptDirectInput === false
-                ? "This agent is controlled by its parent and cannot accept images."
+                ? "This agent is controlled by its parent and cannot accept attachments."
                 : null;
     if (blockedReason) {
       setNotice({ tone: "error", text: blockedReason });
       return;
     }
-    const accepted = Array.from(files).filter((file) =>
-      file.type.startsWith("image/"),
-    );
+    const accepted = Array.from(files);
     if (!accepted.length) {
-      setNotice({ tone: "error", text: "Choose an image file to attach." });
+      setNotice({ tone: "error", text: "Choose a file to attach." });
       return;
     }
-    if (uploads.length + accepted.length > maxImageCount) {
+    if (uploads.length + accepted.length > maxAttachmentCount) {
       setNotice({
         tone: "error",
-        text: `Attach up to ${maxImageCount} images to one message.`,
+        text: `Attach up to ${maxAttachmentCount} files to one message.`,
       });
       return;
     }
-    const tooLarge = accepted.find((file) => file.size > maxImageFileBytes);
+    const tooLarge = accepted.find((file) => file.size > maxAttachmentFileBytes);
     if (tooLarge) {
       setNotice({
         tone: "error",
-        text: `${tooLarge.name} is over the 20 MB input limit.`,
+        text: `${tooLarge.name || "This file"} is over the 32 MB attachment limit.`,
       });
       return;
     }
     compressingUploadsRef.current = true;
     setCompressingUploads(true);
+    const drafts: PendingUpload[] = accepted.map((file) => ({
+      id: clientUUID(),
+      name: file.name || "attachment",
+      size: file.size,
+      mime: file.type || "application/octet-stream",
+      kind: file.type.startsWith("image/") ? "image" : "file",
+      runtimeWorkspaceRoot: "",
+      previewUrl: file.type.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : undefined,
+      input: [],
+      status: "uploading",
+    }));
+    updateUploads((current) => [...current, ...drafts]);
+    let failed = 0;
     try {
-      const converted: PendingUpload[] = [];
-      for (const file of accepted) {
-        converted.push({
-          id: clientUUID(),
-          name: file.name || "Pasted image",
-          dataUrl: await compressImage(file),
-          size: file.size,
-        });
+      for (const [index, file] of accepted.entries()) {
+        const draft = drafts[index];
+        try {
+          const uploaded = await uploadSessionAttachment(draft.id, file);
+          updateUploads((current) =>
+            current.map((upload) =>
+              upload.id === draft.id
+                ? { ...upload, ...uploaded, status: "ready" }
+                : upload,
+            ),
+          );
+        } catch (error) {
+          failed += 1;
+          updateUploads((current) =>
+            current.filter((upload) => upload.id !== draft.id),
+          );
+          if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+          setNotice({ tone: "error", text: shortError(error) });
+        }
       }
-      const combined = [...uploads, ...converted];
-      const attachmentBytes = combined.reduce(
-        (total, upload) =>
-          total + new TextEncoder().encode(upload.dataUrl).byteLength,
-        0,
-      );
-      if (attachmentBytes > maxAttachmentBytes) {
-        setNotice({
-          tone: "error",
-          text: "These compressed images exceed the 700 KB combined attachment limit. Remove an image or choose fewer images.",
-        });
-        return;
-      }
-      updateUploads(combined);
-      setNotice(null);
-    } catch (error) {
-      setNotice({ tone: "error", text: shortError(error) });
+      if (!failed) setNotice(null);
     } finally {
       compressingUploadsRef.current = false;
       setCompressingUploads(false);
@@ -5528,8 +5917,8 @@ function WorkspaceApp() {
     event: ReactClipboardEvent<HTMLTextAreaElement>,
   ) => {
     const clipboard = event.clipboardData;
-    const pasted = imagesFromClipboard(clipboard);
-    if (!pasted.containsImage) return;
+    const pasted = filesFromClipboard(clipboard);
+    if (!pasted.containsFile) return;
 
     event.preventDefault();
     const text = textFromClipboardWithImages(clipboard);
@@ -5550,11 +5939,11 @@ function WorkspaceApp() {
     if (!pasted.files.length) {
       setNotice({
         tone: "error",
-        text: "Could not read the pasted image. Try copying it again or use Attach image.",
+        text: "Could not read the pasted file. Try copying it again or use Attach files.",
       });
       return;
     }
-    void addImages(pasted.files);
+    void addAttachments(pasted.files);
   };
 
   const replyApproval = (prompt: ApprovalPrompt, result: unknown) => {
@@ -6491,6 +6880,7 @@ function WorkspaceApp() {
                   onOpenThread={openAgentThread}
                   onFork={forkConversationAtMessage}
                   forkBusy={forkBusy}
+                  activeTurnId={activeTurnId}
                 />
               );
             const openKey = `${selectedRef.current ?? "new"}:${group.key}`;
@@ -6586,8 +6976,19 @@ function WorkspaceApp() {
               <div className="upload-strip">
                 {uploads.map((upload) => (
                   <div className="upload-chip" key={upload.id}>
-                    <img src={upload.dataUrl} alt="" />
-                    <span>{upload.name}</span>
+                    {upload.kind === "image" && upload.previewUrl ? (
+                      <img src={upload.previewUrl} alt="" />
+                    ) : (
+                      <FileText size={18} aria-hidden="true" />
+                    )}
+                    <span className="upload-chip-copy">
+                      <strong>{upload.name}</strong>
+                      <small>
+                        {upload.status === "uploading"
+                          ? "Uploading…"
+                          : `${upload.kind === "image" ? "Image" : upload.mime} · ${formatAttachmentSize(upload.size)}`}
+                      </small>
+                    </span>
                     <button
                       type="button"
                       aria-label={`Remove ${upload.name}`}
@@ -6597,9 +6998,17 @@ function WorkspaceApp() {
                         selectedThread?.canAcceptDirectInput === false
                       }
                       onClick={() =>
-                        updateUploads((current) =>
-                          current.filter((item) => item.id !== upload.id),
-                        )
+                        {
+                          updateUploads((current) =>
+                            current.filter((item) => item.id !== upload.id),
+                          );
+                          if (upload.previewUrl)
+                            URL.revokeObjectURL(upload.previewUrl);
+                          void fetch(`/api/uploads/${encodeURIComponent(upload.id)}`, {
+                            method: "DELETE",
+                            credentials: "same-origin",
+                          }).catch(() => undefined);
+                        }
                       }
                     >
                       <X size={13} />
@@ -6751,13 +7160,17 @@ function WorkspaceApp() {
                     ? "Plugins and files"
                     : completionTarget.kind === "skill"
                       ? "Skills"
-                      : "Commands"}
+                      : completionTarget.kind === "mcp"
+                        ? "MCP servers"
+                        : "Commands"}
                 </div>
                 <div
                   role="listbox"
                   aria-label={
                     completionTarget.kind === "command"
                       ? "Slash commands"
+                      : completionTarget.kind === "mcp"
+                        ? "MCP servers"
                       : "Composer suggestions"
                   }
                 >
@@ -6788,18 +7201,34 @@ function WorkspaceApp() {
                         key={
                           item.kind === "command"
                             ? `${item.command}:${index}`
+                            : item.kind === "mcp"
+                              ? `mcp:${item.name}`
                             : item.kind === "plugin"
                               ? `plugin:${item.id}`
                               : `${item.path}:${index}`
                         }
                         title={
-                          item.kind === "command" ? item.description : item.kind === "plugin" ? item.description : item.path
+                          item.kind === "command"
+                            ? item.description
+                            : item.kind === "mcp"
+                              ? item.description
+                              : item.kind === "plugin"
+                                ? item.description
+                                : item.path
                         }
                         onPointerDown={(event) => event.preventDefault()}
                         onMouseEnter={() => setCompletionIndex(index)}
                         onClick={() => selectCompletion(item)}
                       >
-                        {item.kind === "plugin" ? (
+                        {item.kind === "mcp" ? (
+                          <>
+                            <Terminal size={15} aria-hidden="true" />
+                            <span className="composer-completion-copy">
+                              <strong>{item.name}</strong>
+                              <small>{item.description}</small>
+                            </span>
+                          </>
+                        ) : item.kind === "plugin" ? (
                           <>
                             <Code2 size={15} aria-hidden="true"/>
                             <span className="composer-completion-copy">
@@ -6844,6 +7273,8 @@ function WorkspaceApp() {
                     <div className="composer-completion-status" role="status">
                       {completionTarget.kind === "command"
                         ? "No supported commands found."
+                        : completionTarget.kind === "mcp"
+                          ? "No matching MCP servers found."
                         : completionTarget.kind === "mention"
                           ? "No matching installed plugins or files."
                           : "No skills found."}
@@ -6859,13 +7290,13 @@ function WorkspaceApp() {
               <div className="composer-tools">
                 <label
                   className="composer-tool attach-tool"
-                  title="Attach an image"
+                  title="Attach files"
                 >
-                  <ImagePlus size={17} />
-                  <span className="sr-only">Attach image</span>
+                  <FilePlus2 size={17} />
+                  <span className="sr-only">Attach files</span>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="*/*"
                     multiple
                     disabled={
                       compressingUploads ||
@@ -6875,7 +7306,7 @@ function WorkspaceApp() {
                       selectedThread?.canAcceptDirectInput === false
                     }
                     onChange={(event) => {
-                      void addImages(event.currentTarget.files);
+                      void addAttachments(event.currentTarget.files);
                       event.currentTarget.value = "";
                     }}
                   />
@@ -8033,13 +8464,7 @@ function OptimisticMessageBubble({message,onRestore}:{
     <div className="user-message-with-actions">
       <div className="user-message-bubble">
         {message.input.map((part,index)=>(
-          part.type==="text"?<div className="user-text" key={index}>{part.text}</div>:
-          part.type==="image" && "url" in part ?
-            <div className="optimistic-attachment" key={index}>
-              {safeImageUrl(part.url)?<img src={part.url} alt="Attached image"/>:"Image attachment"}
-            </div>:
-            part.type==="skill" ? <span className="user-chip" key={index}>Skill · {part.name}</span>:
-            part.type==="mention" ? <span className="user-chip" key={index}>@{part.name}</span>:null
+          <UserInputPart key={index} part={part as unknown as Record<string, unknown>} />
         ))}
         <div className="optimistic-status" role="status">
           {uncertain?"Delivery unconfirmed":message.status==="sending"
@@ -8059,13 +8484,17 @@ function TimelineCard({
   onOpenThread,
   onFork,
   forkBusy,
+  activeTurnId,
 }: {
   entry: TimelineItem;
   onOpenThread: (threadId: string, parentThreadId?: string) => void;
   onFork?: (entry:TimelineItem)=>void;
   forkBusy?: boolean;
+  activeTurnId?: string|null;
 }) {
   const item = entry.item;
+  const forkFromActiveTurn = item.type === "agentMessage" &&
+    isActiveAssistantTurn(entry.turnId,item.type,activeTurnId);
   if (item.type === "userMessage") {
     const content = Array.isArray(item.content)
       ? (item.content as Array<Record<string, unknown>>)
@@ -8081,7 +8510,7 @@ function TimelineCard({
           <div className="message-meta">
             <MessageTimestamp startedAtMs={entry.startedAtMs} completedAtMs={entry.completedAtMs}/>
             {entry.turnId ? <button type="button" className="message-fork-button"
-              disabled={forkBusy||Boolean(entry.streaming)}
+              disabled={forkBusy}
               title="Fork before this user turn"
               onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
           </div>
@@ -8105,8 +8534,11 @@ function TimelineCard({
           <MarkdownContent text={text} />
           <div className="message-meta">
             <MessageTimestamp startedAtMs={entry.startedAtMs} completedAtMs={entry.completedAtMs}/>
-            {entry.turnId && !entry.streaming ? <button type="button" className="message-fork-button"
-              disabled={forkBusy} title="Fork through this completed assistant turn"
+            {entry.turnId ? <button type="button" className="message-fork-button"
+              disabled={forkBusy}
+              title={forkFromActiveTurn
+                ? "Fork before the active turn"
+                : "Fork through this completed assistant turn"}
               onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
           </div>
           {item.delivery === "failed" ? (
@@ -8310,6 +8742,8 @@ function TimelineCard({
     return <CollabAgentActivity item={item} onOpenThread={onOpenThread} />;
   if (item.type === "subAgentActivity")
     return <SubAgentActivity item={item} onOpenThread={onOpenThread} />;
+  if (item.type === "imageGeneration")
+    return <ImageGenerationActivity item={item} streaming={entry.streaming} />;
   if (
     item.type === "mcpToolCall" ||
     item.type === "dynamicToolCall" ||
@@ -8344,7 +8778,6 @@ function TimelineCard({
       "enteredReviewMode",
       "exitedReviewMode",
       "imageView",
-      "imageGeneration",
       "hookPrompt",
     ].includes(item.type)
   )
@@ -8356,10 +8789,95 @@ function TimelineCard({
   ) : null;
 }
 
+function imageGenerationResultUrl(item: ThreadItem): string | null {
+  if (typeof item.result !== "string") return null;
+  const value = item.result.trim();
+  if (!value) return null;
+  const direct = safeImageUrl(value);
+  if (direct) return direct;
+  if (value.length > 100 && /^[A-Za-z0-9+/=\r\n]+$/.test(value))
+    return `data:image/png;base64,${value}`;
+  return null;
+}
+
+function ImageGenerationActivity({
+  item,
+  streaming = false,
+}: {
+  item: ThreadItem;
+  streaming?: boolean;
+}) {
+  const context = useContext(FileReferenceContext);
+  const savedPath = asString(item.savedPath).trim();
+  const resourcePath =
+    savedPath && context ? localReferencePath(savedPath, context.cwd) : null;
+  const inlineUrl = resourcePath ? null : imageGenerationResultUrl(item);
+  const status = activityStatus(
+    item.status ?? (streaming ? "inProgress" : undefined),
+    item.success,
+  );
+  const details = hasMeaningfulActivityDetails(item);
+  const summary = (
+    <>
+      <span className="activity-icon tool">
+        <ImagePlus size={14} />
+      </span>
+      <span className="activity-title">Image generation</span>
+      <span className={`activity-status ${status.className}`}>
+        {status.label}
+      </span>
+    </>
+  );
+
+  if (!details && !resourcePath && !inlineUrl)
+    return <div className="activity-card activity-progress">{summary}</div>;
+
+  return (
+    <details className="activity-card image-generation-card" open>
+      <summary>
+        {summary}
+        <ChevronDown className="activity-chevron" size={15} />
+      </summary>
+      <div className="activity-body image-generation-body">
+        {resourcePath && context ? (
+          <div className="image-generation-preview">
+            <LocalResourceImage
+              path={resourcePath}
+              alt={savedPath.split("/").at(-1) || "Generated image"}
+              scope={context}
+            />
+          </div>
+        ) : inlineUrl ? (
+          <a
+            className="image-generation-preview"
+            href={inlineUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img src={inlineUrl} alt="Generated image" loading="lazy" />
+          </a>
+        ) : null}
+        {details ? (
+          <pre>
+            <code>{formatActivityDetails(item)}</code>
+          </pre>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function UserInputPart({ part }: { part: Record<string, unknown> }) {
   const context=useContext(FileReferenceContext);
-  if (part.type === "text")
-    return <div className="user-text">{asString(part.text)}</div>;
+  const [open, setOpen] = useState(false);
+  if (part.type === "text") {
+    const text = asString(part.text);
+    return text.includes(":codex-file-citation") ? (
+      <MarkdownContent text={text} />
+    ) : (
+      <div className="user-text">{text}</div>
+    );
+  }
   if (part.type === "image") {
     const url = safeImageUrl(part.url);
     return url ? (
@@ -8375,6 +8893,18 @@ function UserInputPart({ part }: { part: Record<string, unknown> }) {
     const fullPath=path&&context?localReferencePath(path,context.cwd):null;
     if(fullPath&&context)return <LocalResourceImage path={fullPath} alt={path.split("/").at(-1)||"Attached image"} scope={context}/>;
     return <span className="unsupported-attachment">Image · {path.split("/").at(-1)}</span>;
+  }
+  if (part.type === "file" || part.type === "localFile") {
+    const path = asString(part.path);
+    const fullPath = path && context ? localReferencePath(path, context.cwd) : null;
+    if (fullPath && context)
+      return <>
+        <button type="button" className="unsupported-attachment" onClick={() => setOpen(true)}>
+          <FileText size={14} aria-hidden="true" /> {path.split("/").at(-1) || "Attachment"}
+        </button>
+        {open ? <FileReferenceViewer path={fullPath} scope={context} onClose={() => setOpen(false)} /> : null}
+      </>;
+    return <span className="unsupported-attachment">{path.split("/").at(-1) || "Attachment"}</span>;
   }
   if (part.type === "audio" || part.type === "localAudio")
     return <span className="unsupported-attachment">Audio attachment</span>;
@@ -9639,7 +10169,19 @@ function groupTimelineItems(items: TimelineItem[]): {
 
 function formatUnknown(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2) ?? String(value);
+    return (
+      JSON.stringify(value, (key, entry) => {
+        if (
+          ["data", "result", "image_url"].includes(key) &&
+          typeof entry === "string" &&
+          entry.length > 1000 &&
+          (/^data:image\/(?:png|jpeg|jpg|gif|webp);base64,/i.test(entry) ||
+            (entry.length > 100_000 && /^[A-Za-z0-9+/=\r\n]+$/.test(entry)))
+        )
+          return `[image content omitted (${entry.length} characters)]`;
+        return entry;
+      }, 2) ?? String(value)
+    );
   } catch {
     return String(value);
   }
