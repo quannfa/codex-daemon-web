@@ -36,6 +36,7 @@ export class SubagentReturnLoop {
   constructor(
     private readonly path: string,
     private readonly connect: () => Promise<AppServerRpc> = () => AppServerRpc.connect(),
+    private readonly isWaiting: (threadId:string)=>boolean = () => false,
   ) {}
 
   async start() {
@@ -83,18 +84,23 @@ export class SubagentReturnLoop {
     }
     return items;
   }
-  private async latest(rpc: AppServerRpc, childId: string): Promise<{id:string; status:string; summary:string} | null> {
+  private async latest(rpc: AppServerRpc, childId: string, includeSummary = true): Promise<{id:string; status:string; summary:string} | null> {
     const page = await rpc.call<{data: Dict[]}>("thread/turns/list", {threadId:childId,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
     const turn = page.data?.[0];
     if (!turn || !asStr(turn.id)) return null;
     // Only fetch potentially large item history for newly completed turns.
-    if (!this.state.initialized || turn.status !== "completed")
+    if (!includeSummary || !this.state.initialized || turn.status !== "completed")
       return {id:turn.id,status:asStr(turn.status),summary:""};
     const full = await rpc.call<{data: Dict[]}>("thread/turns/list", {threadId:childId,limit:1,sortDirection:"desc",itemsView:"full"});
     const messages = (Array.isArray(full.data?.[0]?.items) ? full.data[0].items : [])
       .map((entry: Dict) => asObj(entry.item || entry))
       .filter((item: Dict) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim());
     return { id: turn.id, status: asStr(turn.status), summary: asStr(messages.at(-1)?.text).slice(0, 6000) };
+  }
+  private async goalInProgress(rpc: AppServerRpc, childId: string): Promise<boolean> {
+    const response = await rpc.call<Dict>("thread/goal/get", {threadId:childId});
+    const status = asStr(asObj(response.goal).status);
+    return status === "active" || status === "paused";
   }
   private async tick() {
     if (this.stopped || this.running) return;
@@ -119,6 +125,19 @@ export class SubagentReturnLoop {
         if (seen && seen.updatedAt === updatedAt) continue;
         // Allow daemon time to persist the final turn and its assistant message.
         if (updatedAt && Date.now() / 1000 - updatedAt < 10) continue;
+        if (this.isWaiting(childId)) {
+          let waitingTurn: Awaited<ReturnType<typeof this.latest>>;
+          try { waitingTurn = await this.latest(rpc,childId,false); } catch { continue; }
+          if (!waitingTurn) continue;
+          // The completed turn registered the wait and is an intermediate
+          // checkpoint. Remember it so removing the wait cannot relay it later.
+          this.state.seen[childId]={turnId:waitingTurn.id,updatedAt};
+          changed=true;
+          continue;
+        }
+        try {
+          if (await this.goalInProgress(rpc,childId)) continue;
+        } catch { continue; }
         let turn: Awaited<ReturnType<typeof this.latest>>;
         try { turn = await this.latest(rpc,childId); } catch { continue; }
         if (!turn) continue;

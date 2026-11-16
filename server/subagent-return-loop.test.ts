@@ -14,6 +14,7 @@ async function check() {
   const path=join(dir,"state.json");
   const now=Math.floor(Date.now()/1000);
   let updated=now-240, turnId="old-turn", parentStatus="active";
+  let waiting=false, goalStatus:string|null=null;
   let failAddAfterPersist=false, consumeBeforeAck=false, cold=false, resumeCalls=0;
   let queueAdds=0, oldTurnStarts=0, queueListCalls=0;
   const queued: {id:string;clientUserMessageId:string;input:unknown[]}[]=[];
@@ -36,6 +37,8 @@ async function check() {
         queueListCalls++;
         return {data:queued,nextCursor:null};
       }
+      if(method==="thread/goal/get")
+        return {goal:goalStatus?{status:goalStatus}:null};
       if(method==="thread/queue/add"){
         queueAdds++;
         assert(params.threadId==="parent","wrong destination");
@@ -52,7 +55,7 @@ async function check() {
     },
     close:()=>{},
   });
-  const loop=new SubagentReturnLoop(path,connect as any);
+  const loop=new SubagentReturnLoop(path,connect as any,()=>waiting);
   try {
     await loop.start();
     await sleep(100);
@@ -60,6 +63,27 @@ async function check() {
     const baseline=JSON.parse(await readFile(path,"utf8"));
     assert(Object.keys(baseline.seen).length===2,"historical child baseline wrong");
     assert(queueAdds===0,"old work replayed");
+
+    // A turn that registered a wait is an intermediate checkpoint. It must
+    // never be relayed after the wait is removed.
+    waiting=true;updated+=30;turnId="waiting-turn";
+    await (loop as any).tick();await sleep(100);
+    assert(queueAdds===0,"waiting child was reported as completed");
+    const waitingState=JSON.parse(await readFile(path,"utf8"));
+    assert(waitingState.seen.child.turnId==="waiting-turn","waiting turn was not suppressed");
+    waiting=false;
+    await (loop as any).tick();await sleep(50);
+    assert(queueAdds===0,"suppressed waiting turn was relayed after cancellation");
+
+    // Active and paused goals span multiple turns and are not complete child
+    // assignments even when the latest individual turn has completed.
+    goalStatus="active";updated+=30;turnId="goal-intermediate";
+    await (loop as any).tick();await sleep(100);
+    assert(queueAdds===0,"active goal turn was reported as completed");
+    goalStatus="paused";
+    await (loop as any).tick();await sleep(50);
+    assert(queueAdds===0,"paused goal turn was reported as completed");
+    goalStatus="complete";
 
     // The parent and a sibling are active: the completion still enters Queue.
     updated+=30;turnId="first-new";
@@ -96,7 +120,7 @@ async function check() {
     assert(oldTurnStarts===0,"legacy direct turn execution called");
     const saved=JSON.parse(await readFile(path,"utf8"));
     assert(Object.values(saved.jobs).length===4,"persistent job checkpoint missing");
-    console.log("SUBAGENT_QUEUE_TESTS_PASS baseline/parent-active/sibling-active/ack-reconciliation/dedupe/consumed-ack-recovery/cold-resume/no-turn-start");
+    console.log("SUBAGENT_QUEUE_TESTS_PASS baseline/wait-suppression/goal-suppression/parent-active/sibling-active/ack-reconciliation/dedupe/consumed-ack-recovery/cold-resume/no-turn-start");
   } finally {
     loop.stop();
     await rm(dir,{recursive:true,force:true});

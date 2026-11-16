@@ -52,7 +52,8 @@ const server = createServer(app);
 const scheduledTaskStore = new ScheduledTaskStore(config.scheduledTasksPath);
 const goalWaits = new GoalWaitManager(config.goalWaitsPath);
 const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore,Date.now,AppServerRpc.connect);
-const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath,()=>AppServerRpc.connect());
+const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath,()=>AppServerRpc.connect(),
+  threadId=>goalWaits.waitStatus(threadId)!==null);
 
 function originAllowed(origin: string | undefined): boolean {
   return Boolean(origin && config.allowedOrigins.has(origin));
