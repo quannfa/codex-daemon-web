@@ -134,9 +134,10 @@ export function forkAtMessage(
   options:{activeTurn?:boolean;settings?:ForkThreadSettings}={}
 ){
   if(!threadId||!turnId)throw new Error("This message has no saved Codex turn.");
-  const history = kind==="agentMessage"&&options.activeTurn
-    ? {threadId,excludeTurns:true}
-    : kind==="userMessage"
+  // The daemon rejects lastTurnId for an in-progress turn. Forking without
+  // either boundary silently copies the whole parent, so preserve the
+  // selected prefix by excluding that active turn instead.
+  const history = kind==="userMessage" || options.activeTurn
     ? {threadId,beforeTurnId:turnId,excludeTurns:true}
     : {threadId,lastTurnId:turnId,excludeTurns:true};
   return {...history,...(options.settings ?? {})};

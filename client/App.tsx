@@ -3729,7 +3729,7 @@ function WorkspaceApp() {
         result=await requestFork(activeAssistantTurn);
       }catch(error){
         // The active-turn notification can race with a click. The daemon's
-        // validation is authoritative, so retry with its mid-turn fork form.
+        // validation is authoritative, so retry by excluding that turn.
         if(!activeAssistantTurn&&kind==="agentMessage"&&isInProgressForkError(error)){
           setActiveTurnId(entry.turnId);
           setTurnActive(true);
