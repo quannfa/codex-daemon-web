@@ -6943,6 +6943,13 @@ function WorkspaceApp() {
 
         {selectedThread && client ? <ThreadGoalPanel key={selectedThread.id}
           client={client} threadId={selectedThread.id} revision={goalRevision}
+          onWaitCancelled={()=>{
+            setGoalWaitThreadIds(current=>{
+              if(!current.has(selectedThread.id))return current;
+              const next=new Set(current);next.delete(selectedThread.id);return next;
+            });
+            setGoalWaitRevision(value=>value+1);
+          }}
           onError={error=>setNotice({tone:"error",text:"Goal: "+error})}/> : null}
 
         {status.daemon.available ? null : (

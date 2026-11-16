@@ -4629,11 +4629,17 @@ html[data-keyboard-visible="true"] .composer-wrap {
   border-radius:6px;background:var(--surface-warning);color:var(--text-warning);}
 .thread-goal-wait>svg{flex:0 0 auto;margin-top:1px;}
 .thread-goal-wait-copy{min-width:0;display:flex;flex:1;flex-direction:column;gap:3px;}
+.thread-goal-wait-cancel{display:flex;align-items:center;gap:4px;flex:0 0 auto;
+  min-height:26px;padding:4px 7px;border:1px solid var(--border-warning);border-radius:6px;
+  background:var(--surface-raised);color:var(--ink);font:inherit;font-size:10px;cursor:pointer;}
+.thread-goal-wait-cancel:disabled{opacity:.5;cursor:default;}
 .thread-goal-wait-primary,.thread-goal-wait-details{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 12px;}
 .thread-goal-wait-primary{font-size:11px;color:var(--ink);}
 .thread-goal-wait-primary time{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;}
 .thread-goal-wait-details{font-size:10px;overflow-wrap:anywhere;}
 .thread-goal-wait.phase-resuming{border-color:var(--border-success);background:var(--surface-success);color:var(--text-positive);}
+@media(max-width:590px){.thread-goal-wait{flex-wrap:wrap;}.thread-goal-wait-copy{flex-basis:calc(100% - 24px);}
+  .thread-goal-wait-cancel{margin-left:23px;}}
 .thread-goal-panel progress{width:100%;height:5px;accent-color:var(--green);}
 .thread-goal-editor{display:flex;flex-direction:column;gap:8px;}
 .thread-goal-editor label{display:flex;flex-direction:column;gap:4px;font-size:11px;}

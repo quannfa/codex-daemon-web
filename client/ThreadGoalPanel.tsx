@@ -1,4 +1,4 @@
-import {Clock3} from "lucide-react";
+import {Clock3,X} from "lucide-react";
 import {useEffect,useState} from "react";
 import type {RpcClient} from "./protocol";
 import {
@@ -23,10 +23,11 @@ const editableStatuses:ThreadGoalStatus[]=["active","paused","blocked","complete
 const format=(value:number)=>Number.isFinite(value)?Math.round(value).toLocaleString():"—";
 
 export default function ThreadGoalPanel({
-  client,threadId,revision=0,onError,
+  client,threadId,revision=0,onError,onWaitCancelled,
 }:{
   client:RpcClient|null;threadId:string;revision?:number;
   onError:(message:string)=>void;
+  onWaitCancelled?:()=>void;
 }){
   const [goal,setGoal]=useState<ThreadGoal|null>(null);
   const [objective,setObjective]=useState("");
@@ -38,6 +39,7 @@ export default function ThreadGoalPanel({
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState("");
   const [wait,setWait]=useState<GoalWaitStatus|null>(null);
+  const [waitCancelling,setWaitCancelling]=useState(false);
   const [waitError,setWaitError]=useState("");
   const [serverOffsetMs,setServerOffsetMs]=useState(0);
   const [nowMs,setNowMs]=useState(()=>Date.now());
@@ -134,6 +136,16 @@ export default function ThreadGoalPanel({
     }catch(error){setMessage("Could not clear goal: "+String(error));}
     finally{setBusy(false);}
   };
+  const cancelWait=async()=>{
+    if(!wait||waitCancelling)return;
+    setWaitCancelling(true);setMessage("");
+    try{
+      await cancelGoalWait(threadId);
+      setWait(null);
+      onWaitCancelled?.();
+    }catch(error){setMessage("Could not cancel wait.");onError(String(error));}
+    finally{setWaitCancelling(false);}
+  };
   const effectiveNow=nowMs+serverOffsetMs;
   const waitMode=wait?goalWaitDisplayMode(wait,effectiveNow):null;
   const waitDeadline=wait?Date.parse(wait.until):0;
@@ -164,6 +176,12 @@ export default function ThreadGoalPanel({
           {wait.reason?<span>Reason: {wait.reason}</span>:null}
         </div>
       </div>
+      <button type="button" className="thread-goal-wait-cancel"
+        onClick={()=>void cancelWait()} disabled={waitCancelling}
+        title="Cancel wait" aria-label="Cancel wait">
+        <X size={14} aria-hidden="true"/>
+        <span>{waitCancelling?"Cancelling…":"Cancel wait"}</span>
+      </button>
     </div>:null}
     {goal&&!editing?<>
       <p className="thread-goal-objective">{goal.objective}</p>
