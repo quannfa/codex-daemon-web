@@ -10,15 +10,15 @@ import {
   MAX_WAIT_MS,
   MIN_WAIT_MS,
   parseWaitRequest,
-  waitForDuration,
 } from "../server/scheduled-task-control";
 
-test("scheduled prompts keep waiting inside the current turn", () => {
+test("scheduled prompts defer the next turn during a wait", () => {
   const prompt = buildScheduledTurnPrompt("Check the remote job.");
   assert.match(prompt, /^Check the remote job\./);
   assert.match(prompt, /wait_until tool/);
   assert.match(prompt, /mandatory for every model/);
-  assert.match(prompt, /same turn/);
+  assert.match(prompt, /deferred continuation/);
+  assert.match(prompt, /end this turn/);
   assert.match(prompt, /Do not use clock\.sleep/);
 });
 
@@ -60,9 +60,10 @@ test("wait requests accept one bounded duration or future timestamp", () => {
   }
 });
 
-test("wait can be cancelled when the client connection closes", async () => {
-  const controller = new AbortController();
-  const pending = waitForDuration(10_000, controller.signal);
-  controller.abort();
-  await assert.rejects(pending, /Wait cancelled/);
+test("wait parsing remains bounded for the deferred scheduler", () => {
+  const parsed = parseWaitRequest(
+    { durationMs: MIN_WAIT_MS, reason: "deferred" },
+    Date.parse("2026-11-15T12:00:00.000Z"),
+  );
+  assert.equal(parsed.durationMs, MIN_WAIT_MS);
 });

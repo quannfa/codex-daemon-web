@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { config } from "./config.js";
+import type { GoalWaitManager } from "./goal-wait-manager.js";
 import { ScheduledTaskScheduler } from "./scheduled-task-scheduler.js";
 import {
   ScheduledTaskStore,
@@ -14,6 +15,7 @@ import {
 type ControlRequest = {
   operation?: unknown;
   id?: unknown;
+  threadId?: unknown;
   includeArchived?: unknown;
   task?: ScheduledTaskInput;
   durationMs?: unknown;
@@ -77,33 +79,10 @@ export function parseWaitRequest(request: ControlRequest, now = Date.now()): Par
   return { durationMs, until, reason };
 }
 
-export function waitForDuration(
-  durationMs: number,
-  signal?: AbortSignal,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("Wait cancelled"));
-      return;
-    }
-    let timer: NodeJS.Timeout;
-    const abort = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      reject(new Error("Wait cancelled"));
-    };
-    const finish = () => {
-      signal?.removeEventListener("abort", abort);
-      resolve();
-    };
-    timer = setTimeout(finish, durationMs);
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
 export async function startScheduledTaskControlSocket(
   store: ScheduledTaskStore,
   scheduler: ScheduledTaskScheduler,
+  goalWaits: GoalWaitManager,
 ): Promise<Server> {
   const directory = dirname(config.scheduledTasksSocketPath);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -133,7 +112,7 @@ export async function startScheduledTaskControlSocket(
     request.once("aborted", abort);
     response.once("close", abort);
     void readRequest(request)
-      .then((body) => handleControlRequest(store, scheduler, body, controller.signal))
+      .then((body) => handleControlRequest(store, scheduler, goalWaits, body))
       .then((result) => {
         responded = true;
         if (!response.destroyed)
@@ -219,20 +198,16 @@ async function readRequest(
 async function handleControlRequest(
   store: ScheduledTaskStore,
   scheduler: ScheduledTaskScheduler,
+  goalWaits: GoalWaitManager,
   request: ControlRequest,
-  signal?: AbortSignal,
 ): Promise<unknown> {
   const id = typeof request.id === "string" ? request.id : "";
   switch (request.operation) {
     case "wait": {
       const parsed = parseWaitRequest(request);
-      await waitForDuration(parsed.durationMs, signal);
-      return {
-        status: "completed",
-        waitedMs: parsed.durationMs,
-        until: parsed.until,
-        ...(parsed.reason ? { reason: parsed.reason } : {}),
-      };
+      if (typeof request.threadId !== "string" || !request.threadId)
+        throw new TaskValidationError("The wait request has no daemon conversation ID");
+      return goalWaits.register(request.threadId, parsed.until, parsed.reason);
     }
     case "validateThread": {
       const threadId=await store.validateThreadId(requiredId(id));

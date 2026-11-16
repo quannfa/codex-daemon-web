@@ -182,6 +182,10 @@ export const config = {
     process.env.CODEX_WEB_TASKS_SOCKET_FILE ||
       join(dirname(tokenPath), "scheduled-tasks.sock"),
   ),
+  goalWaitsPath: resolve(
+    process.env.CODEX_WEB_GOAL_WAITS_FILE ||
+      join(dirname(tokenPath), "goal-waits.json"),
+  ),
   defaultTokenPath: !process.env.CODEX_WEB_TOKEN_FILE,
   configuredAccessToken: process.env.CODEX_WEB_ACCESS_TOKEN,
   maxPayloadBytes: 1024 * 1024,

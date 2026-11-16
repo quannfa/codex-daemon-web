@@ -23,6 +23,7 @@ import {
 import { config } from "./config.js";
 import { daemonAvailable, endpointLabel } from "./daemon.js";
 import { ScheduledTaskScheduler } from "./scheduled-task-scheduler.js";
+import { GoalWaitManager } from "./goal-wait-manager.js";
 import { SubagentReturnLoop } from "./subagent-return-loop.js";
 import { AppServerRpc } from "./app-server-rpc.js";
 import {
@@ -49,6 +50,7 @@ import {
 const app = express();
 const server = createServer(app);
 const scheduledTaskStore = new ScheduledTaskStore(config.scheduledTasksPath);
+const goalWaits = new GoalWaitManager(config.goalWaitsPath);
 const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore,Date.now,AppServerRpc.connect);
 const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath,()=>AppServerRpc.connect());
 
@@ -469,11 +471,13 @@ const closeBridge = attachBridge(server);
 
 await prepareAuthentication();
 await scheduledTaskStore.initialize();
+await goalWaits.start();
 await scheduledTaskScheduler.start();
 if (config.subagentReturnEnabled) await subagentReturnLoop.start();
 const scheduledTaskControlSocket = await startScheduledTaskControlSocket(
   scheduledTaskStore,
   scheduledTaskScheduler,
+  goalWaits,
 );
 server.listen(config.port, config.host, () => {
   process.stdout.write(
@@ -488,6 +492,7 @@ function shutdown(): void {
   clearInterval(uploadPruneTimer);
   clearInterval(sessionUploadPruneTimer);
   sharedConversations.close();
+  goalWaits.stop();
   scheduledTaskScheduler.stop();
   subagentReturnLoop.stop();
   closeBridge();

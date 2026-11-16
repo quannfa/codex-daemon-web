@@ -85,7 +85,7 @@ const tools: Tool[] = [
   {
     name: "wait_until",
     description:
-      "Keep the current Codex turn open until the requested duration or timestamp. This is the mandatory waiting mechanism for every model: use it for long waits instead of ending the turn, clock.sleep, shell sleep, functions.wait, or repeated polling.",
+      "Register a WebUI-managed wait until the requested duration or timestamp. The tool returns immediately and the WebUI pauses automatic continuation so no model turns run during the wait. After calling it, end the current turn; the WebUI resumes one continuation turn at the requested time. This is mandatory for every model: never emulate waiting with clock.sleep, shell sleep, functions.wait, or repeated polling.",
     inputSchema: {
       type: "object",
       properties: {
@@ -184,7 +184,7 @@ const server = new Server(
   {
     capabilities: { tools: { listChanged: false } },
     instructions:
-      "Manage scheduled tasks and their saved run history. For any wait, every model must call wait_until so the current turn remains open; never emulate waiting by ending the turn, using clock.sleep, shell sleep, functions.wait, or short polling. Task run history is retained when tasks are edited, paused, or archived.",
+      "Manage scheduled tasks and their saved run history. For any wait, every model must call wait_until. wait_until registers a WebUI-managed deferred continuation and returns immediately; after it returns, end the current turn and do not poll. Never emulate waiting with clock.sleep, shell sleep, functions.wait, or short repeated checks. Task run history is retained when tasks are edited, paused, or archived.",
   },
 );
 
@@ -224,14 +224,16 @@ async function callTaskControl(
       typeof args.durationMs === "number" ? args.durationMs : undefined;
     const until = typeof args.until === "string" ? args.until : undefined;
     const reason = typeof args.reason === "string" ? args.reason : undefined;
+    const threadId = currentDaemonThreadId(meta);
     return control(
       {
         operation: "wait",
+        threadId,
         ...(durationMs === undefined ? {} : { durationMs }),
         ...(until === undefined ? {} : { until }),
         ...(reason === undefined ? {} : { reason }),
       },
-      { timeoutMs: null },
+      { timeoutMs: 30_000 },
     );
   }
   if (name === "get_scheduled_task_context")
