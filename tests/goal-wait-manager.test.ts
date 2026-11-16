@@ -73,6 +73,14 @@ test("active goals pause immediately and resume once at the deadline", async () 
     assert.equal(registered.status, "scheduled");
     assert.deepEqual(state.goalSetCalls, ["paused"]);
     assert.equal(manager.pending().length, 1);
+    assert.deepEqual(manager.waitStatus(threadId), {
+      waitId: registered.waitId,
+      threadId,
+      until,
+      reason: "remote job",
+      resumeMode: "goal",
+      phase: "waiting",
+    });
 
     const duplicate = await manager.register(threadId, until, "remote job");
     assert.equal(duplicate.status, "alreadyScheduled");
@@ -81,6 +89,7 @@ test("active goals pause immediately and resume once at the deadline", async () 
     await (manager as any).process(registered.waitId);
     assert.deepEqual(state.goalSetCalls, ["paused", "active"]);
     assert.equal(manager.pending().length, 0);
+    assert.equal(manager.waitStatus(threadId), null);
 
     await (manager as any).process(registered.waitId);
     assert.deepEqual(state.goalSetCalls, ["paused", "active"]);

@@ -72,6 +72,15 @@ export type GoalWaitResult = {
   reason?: string;
 };
 
+export type GoalWaitStatus = {
+  waitId: string;
+  threadId: string;
+  until: string;
+  reason: string;
+  resumeMode: "goal" | "queue";
+  phase: "pausing" | "waiting" | "resuming";
+};
+
 const retryDelayMs = 5_000;
 const maxTimerDelayMs = 2_000_000_000;
 
@@ -222,6 +231,20 @@ export class GoalWaitManager {
     return this.data.waits
       .filter((wait) => !threadId || wait.threadId === threadId)
       .map((wait) => structuredClone(wait));
+  }
+
+  waitStatus(threadIdValue: unknown): GoalWaitStatus | null {
+    const threadId = daemonThreadId(threadIdValue);
+    const wait = this.data.waits.find((entry) => entry.threadId === threadId);
+    if (!wait) return null;
+    return {
+      waitId: wait.id,
+      threadId: wait.threadId,
+      until: wait.until,
+      reason: wait.reason,
+      resumeMode: wait.resumeMode,
+      phase: wait.phase,
+    };
   }
 
   async register(

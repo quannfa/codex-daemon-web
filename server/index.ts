@@ -178,6 +178,18 @@ app.get("/api/status", requireSession, async (request, response, next) => {
   }
 });
 
+app.get("/api/goal-waits/:threadId", requireSession, (request, response) => {
+  response.setHeader("Cache-Control", "no-store");
+  try {
+    response.json({
+      wait: goalWaits.waitStatus(request.params.threadId),
+      serverNow: Date.now(),
+    });
+  } catch {
+    response.status(400).json({ error: "Invalid conversation ID." });
+  }
+});
+
 app.get("/api/browser/tabs", requireSession, async (request, response) => {
   response.setHeader("Cache-Control", "no-store");
   const session = authenticatedSession(request);

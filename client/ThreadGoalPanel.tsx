@@ -1,5 +1,12 @@
+import {Clock3} from "lucide-react";
 import {useEffect,useState} from "react";
 import type {RpcClient} from "./protocol";
+import {
+  formatWaitCountdown,
+  goalWaitDisplayMode,
+  isGoalWaitStatus,
+  type GoalWaitStatus,
+} from "./goal-wait";
 
 export type ThreadGoalStatus = "active"|"paused"|"blocked"|"usageLimited"|"budgetLimited"|"complete";
 export type ThreadGoal = {
@@ -29,6 +36,10 @@ export default function ThreadGoalPanel({
   const [editing,setEditing]=useState(false);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState("");
+  const [wait,setWait]=useState<GoalWaitStatus|null>(null);
+  const [waitError,setWaitError]=useState("");
+  const [serverOffsetMs,setServerOffsetMs]=useState(0);
+  const [nowMs,setNowMs]=useState(()=>Date.now());
   useEffect(()=>{
     let cancelled=false;
     setGoal(null);setLoading(true);setEditing(false);setMessage("");
@@ -45,6 +56,44 @@ export default function ThreadGoalPanel({
       .finally(()=>{if(!cancelled)setLoading(false);});
     return()=>{cancelled=true;};
   },[client,threadId,revision,reload]);
+
+  useEffect(()=>{
+    setWait(null);setWaitError("");setServerOffsetMs(0);setNowMs(Date.now());
+  },[threadId]);
+  useEffect(()=>{
+    let cancelled=false;
+    let inFlight=false;
+    const load=async()=>{
+      if(inFlight)return;
+      inFlight=true;
+      const startedAt=Date.now();
+      try{
+        const response=await fetch(`/api/goal-waits/${encodeURIComponent(threadId)}`,{
+          credentials:"same-origin",
+        });
+        const receivedAt=Date.now();
+        const data=await response.json() as {wait?:unknown;serverNow?:unknown;error?:unknown};
+        if(!response.ok||typeof data.serverNow!=="number"||
+          !(data.wait===null||isGoalWaitStatus(data.wait)))throw new Error("Invalid wait status response");
+        if(cancelled)return;
+        setWait(data.wait);
+        setServerOffsetMs(data.serverNow-Math.round((startedAt+receivedAt)/2));
+        setNowMs(receivedAt);
+        setWaitError("");
+      }catch{
+        if(!cancelled)setWaitError("Could not load wait status.");
+      }finally{inFlight=false;}
+    };
+    void load();
+    const timer=window.setInterval(()=>void load(),5_000);
+    return()=>{cancelled=true;window.clearInterval(timer);};
+  },[threadId,revision,reload]);
+  useEffect(()=>{
+    if(!wait)return;
+    setNowMs(Date.now());
+    const timer=window.setInterval(()=>setNowMs(Date.now()),1_000);
+    return()=>window.clearInterval(timer);
+  },[wait?.waitId,wait?.until,wait?.phase]);
 
   const save=async()=>{
     if(!client||busy||!objective.trim())return;
@@ -81,10 +130,16 @@ export default function ThreadGoalPanel({
     }catch(error){setMessage("Could not clear goal: "+String(error));}
     finally{setBusy(false);}
   };
+  const effectiveNow=nowMs+serverOffsetMs;
+  const waitMode=wait?goalWaitDisplayMode(wait,effectiveNow):null;
+  const waitDeadline=wait?Date.parse(wait.until):0;
+  const waitTime=wait?new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"medium"})
+    .format(new Date(waitDeadline)):"";
   return <section className="thread-goal-panel" aria-label="Conversation goal">
     <div className="thread-goal-heading">
       <strong>Goal mode</strong>
-      {goal?<span className={"thread-goal-state state-"+goal.status}>{labels[goal.status]}</span>:null}
+      {goal?<span className={"thread-goal-state state-"+goal.status}>{labels[goal.status]}</span>
+        :wait?<span className="thread-goal-state state-waiting">Waiting</span>:null}
       <span className="thread-goal-actions">
         {!loading&&!editing?<button type="button" onClick={()=>setReload(value=>value+1)}
           disabled={busy}>Refresh</button>:null}
@@ -93,6 +148,19 @@ export default function ThreadGoalPanel({
       </span>
     </div>
     {loading?<small>Loading goal…</small>:null}
+    {wait?<div className={"thread-goal-wait phase-"+waitMode}>
+      <Clock3 size={15} aria-hidden="true"/>
+      <div className="thread-goal-wait-copy">
+        <div className="thread-goal-wait-primary">
+          <strong>{waitMode==="preparing"?"Preparing wait…":waitMode==="resuming"?"Resuming now…":"Waiting"}</strong>
+          {waitMode==="waiting"?<span>Resumes in <time>{formatWaitCountdown(waitDeadline-effectiveNow)}</time></span>:null}
+        </div>
+        <div className="thread-goal-wait-details">
+          <span>Scheduled for <time dateTime={wait.until}>{waitTime}</time></span>
+          {wait.reason?<span>Reason: {wait.reason}</span>:null}
+        </div>
+      </div>
+    </div>:null}
     {goal&&!editing?<>
       <p className="thread-goal-objective">{goal.objective}</p>
       <div className="thread-goal-metrics">
@@ -120,6 +188,7 @@ export default function ThreadGoalPanel({
       </div>
     </div>:null}
     {message?<small role="status">{message}</small>:null}
+    {waitError&&!wait?<small role="status">{waitError}</small>:null}
     <small className="thread-goal-note">Goal metadata is managed by Codex. Setting a goal does not itself start an automatic execution loop.</small>
   </section>;
 }

@@ -4617,6 +4617,7 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .thread-goal-state{font-size:10px;color:var(--muted);border:1px solid var(--border);
   padding:3px 8px;border-radius:999px;}
 .thread-goal-state.state-active{color:var(--green);}
+.thread-goal-state.state-waiting{color:var(--text-warning);border-color:var(--border-warning);}
 .thread-goal-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto;}
 .thread-goal-actions button{border:1px solid var(--border-strong);border-radius:6px;
   background:var(--surface-raised);color:var(--ink);padding:5px 9px;font:inherit;font-size:10px;cursor:pointer;}
@@ -4624,6 +4625,15 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .thread-goal-actions .thread-goal-danger{color:var(--red);}
 .thread-goal-objective{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;margin:0;line-height:1.5;max-height:140px;overflow-y:auto;}
 .thread-goal-metrics{display:flex;flex-wrap:wrap;gap:14px;font-size:10px;color:var(--muted);}
+.thread-goal-wait{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border:1px solid var(--border-warning);
+  border-radius:6px;background:var(--surface-warning);color:var(--text-warning);}
+.thread-goal-wait>svg{flex:0 0 auto;margin-top:1px;}
+.thread-goal-wait-copy{min-width:0;display:flex;flex:1;flex-direction:column;gap:3px;}
+.thread-goal-wait-primary,.thread-goal-wait-details{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 12px;}
+.thread-goal-wait-primary{font-size:11px;color:var(--ink);}
+.thread-goal-wait-primary time{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;}
+.thread-goal-wait-details{font-size:10px;overflow-wrap:anywhere;}
+.thread-goal-wait.phase-resuming{border-color:var(--border-success);background:var(--surface-success);color:var(--text-positive);}
 .thread-goal-panel progress{width:100%;height:5px;accent-color:var(--green);}
 .thread-goal-editor{display:flex;flex-direction:column;gap:8px;}
 .thread-goal-editor label{display:flex;flex-direction:column;gap:4px;font-size:11px;}
