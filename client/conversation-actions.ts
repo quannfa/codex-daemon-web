@@ -1,3 +1,5 @@
+import type { UserInput } from "./types";
+
 /** Codex-native thread reference for sharing context with another Codex conversation.
  * It is not a browser URL and contains no credentials or conversation content. */
 export function codexThreadLink(threadId:string):string{
@@ -141,6 +143,118 @@ export function forkAtMessage(
     ? {threadId,beforeTurnId:turnId,excludeTurns:true}
     : {threadId,lastTurnId:turnId,excludeTurns:true};
   return {...history,...(options.settings ?? {})};
+}
+
+/** Official Codex history mutation used by the WebUI's withdraw-and-resend action. */
+export function revertAtMessage(threadId:string,turnId:string){
+  if(!threadId||!turnId)throw new Error("This message has no saved Codex turn.");
+  return {threadId,beforeTurnId:turnId};
+}
+
+export type RestoredUserAttachment = {
+  name:string;
+  kind:"image"|"file";
+  mime:string;
+  previewUrl?:string;
+  input:UserInput[];
+};
+
+export type RestoredUserDraft = {
+  text:string;
+  selectedSkills:Array<{name:string;path:string}>;
+  attachments:RestoredUserAttachment[];
+};
+
+const inputFileCitation = /^:codex-file-citation\{path="([\s\S]*)" purpose="input"\}$/;
+
+function citationPath(text:string):string|null{
+  const match=inputFileCitation.exec(text.trim());
+  if(!match)return null;
+  return match[1]
+    .replaceAll("&quot;",'"')
+    .replaceAll("&amp;","&")
+    .replaceAll("&lt;","<")
+    .replaceAll("&gt;",">");
+}
+
+function attachmentName(value:string,fallback:string):string{
+  const withoutQuery=value.split(/[?#]/,1)[0];
+  const encoded=withoutQuery.split("/").filter(Boolean).at(-1)||fallback;
+  try{return decodeURIComponent(encoded)||fallback;}catch{return encoded||fallback;}
+}
+
+/** Reconstruct an editable draft without copying files already referenced by history. */
+export function draftFromUserInputs(parts:UserInput[]):RestoredUserDraft{
+  const text:string[]=[];
+  const selectedSkills:RestoredUserDraft["selectedSkills"]=[];
+  const attachments:RestoredUserAttachment[]=[];
+  let pendingCitation:{index:number;path:string}|null=null;
+
+  for(const part of parts){
+    if(part.type==="text"){
+      const path=citationPath(part.text);
+      if(path){
+        attachments.push({
+          name:attachmentName(path,"Attachment"),
+          kind:"file",
+          mime:"application/octet-stream",
+          input:[part],
+        });
+        pendingCitation={index:attachments.length-1,path};
+      }else{
+        text.push(part.text);
+        pendingCitation=null;
+      }
+      continue;
+    }
+    if(part.type==="skill"){
+      if(!selectedSkills.some(skill=>skill.path===part.path))
+        selectedSkills.push({name:part.name,path:part.path});
+      pendingCitation=null;
+      continue;
+    }
+    if(part.type==="localImage"){
+      if(pendingCitation&&pendingCitation.path===part.path){
+        const attachment=attachments[pendingCitation.index];
+        attachment.kind="image";
+        attachment.mime="image/*";
+        attachment.input.push(part);
+      }else{
+        attachments.push({
+          name:attachmentName(part.path,"Image"),
+          kind:"image",
+          mime:"image/*",
+          input:[part],
+        });
+      }
+      pendingCitation=null;
+      continue;
+    }
+    if(part.type==="image"){
+      const url="url" in part?part.url:"";
+      attachments.push({
+        name:attachmentName(url,"Image"),
+        kind:"image",
+        mime:"image/*",
+        ...(url?{previewUrl:url}:{}),
+        input:[part],
+      });
+      pendingCitation=null;
+      continue;
+    }
+    if(part.type==="localAudio"||part.type==="audio"){
+      const source=part.type==="localAudio"?part.path:part.url;
+      attachments.push({
+        name:attachmentName(source,"Audio"),
+        kind:"file",
+        mime:"audio/*",
+        input:[part],
+      });
+      pendingCitation=null;
+    }
+  }
+
+  return {text:text.join("\n"),selectedSkills,attachments};
 }
 
 /**

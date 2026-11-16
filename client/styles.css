@@ -4717,15 +4717,15 @@ html[data-keyboard-visible="true"] .composer-wrap {
 .user-message-with-actions .message-meta {justify-content:flex-end;}
 .user-message-with-actions {display:flex;flex-direction:column;align-items:flex-end;min-width:0;max-width:100%;}
 .user-message-with-actions .user-message-bubble {max-width:min(100%,680px);}
-.message-fork-button {
+.message-fork-button,.message-revert-button {
   display:inline-flex;align-items:center;gap:5px;
   padding:3px 6px;
   border:0;border-radius:5px;background:transparent;color:var(--text-standard);
   font:inherit;font-size:11px;line-height:1.5;cursor:pointer;
 }
-.message-fork-button:hover {background:var(--surface-hover);color:var(--ink);}
-.message-fork-button:disabled {opacity:.45;cursor:default;}
-.message-fork-button:focus-visible {outline:2px solid var(--focus-ring);}
+.message-fork-button:hover,.message-revert-button:hover {background:var(--surface-hover);color:var(--ink);}
+.message-fork-button:disabled,.message-revert-button:disabled {opacity:.45;cursor:default;}
+.message-fork-button:focus-visible,.message-revert-button:focus-visible {outline:2px solid var(--focus-ring);}
 
 /* Extended Markdown: copyable highlighted code and sanitized diagrams. */
 .markdown-code-block {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {codexThreadLink,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn} from "../client/conversation-actions";
+import {codexThreadLink,draftFromUserInputs,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn,revertAtMessage} from "../client/conversation-actions";
 
 test("copies a Codex-native thread reference, not a WebUI browser URL",()=>{
   const id="01a1782f-e308-73a0-8f48-cc7382e27650";
@@ -75,4 +75,42 @@ test("identifies the assistant item belonging to the active turn",()=>{
   assert.equal(isActiveAssistantTurn("older","agentMessage","active"),false);
   assert.equal(isActiveAssistantTurn("active","userMessage","active"),false);
   assert.equal(isActiveAssistantTurn("unknown","agentMessage",null),false);
+});
+test("uses the official turn boundary when reverting a user message",()=>{
+  assert.deepEqual(revertAtMessage("thread-1","turn-1"),{
+    threadId:"thread-1",
+    beforeTurnId:"turn-1",
+  });
+  assert.throws(()=>revertAtMessage("thread-1",""));
+});
+test("restores message text and reuses referenced attachments",()=>{
+  const citation={
+    type:"text" as const,
+    text:':codex-file-citation{path="/tmp/session/image.png" purpose="input"}',
+    text_elements:[],
+  };
+  assert.deepEqual(draftFromUserInputs([
+    {type:"text",text:"Please inspect this",text_elements:[]},
+    {type:"skill",name:"documents",path:"/skills/documents/SKILL.md"},
+    citation,
+    {type:"localImage",path:"/tmp/session/image.png",detail:"auto"},
+    {type:"localAudio",path:"/tmp/session/note.wav"},
+  ]),{
+    text:"Please inspect this",
+    selectedSkills:[{name:"documents",path:"/skills/documents/SKILL.md"}],
+    attachments:[
+      {
+        name:"image.png",
+        kind:"image",
+        mime:"image/*",
+        input:[citation,{type:"localImage",path:"/tmp/session/image.png",detail:"auto"}],
+      },
+      {
+        name:"note.wav",
+        kind:"file",
+        mime:"audio/*",
+        input:[{type:"localAudio",path:"/tmp/session/note.wav"}],
+      },
+    ],
+  });
 });

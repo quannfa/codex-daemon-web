@@ -23,6 +23,7 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Clock3,
   Settings,
@@ -55,7 +56,7 @@ import { FileReferenceContext, MarkdownContent, LocalResourceImage } from "./Res
 import FileReferenceViewer from "./FileReferenceViewer";
 import { localReferencePath } from "./resource-paths";
 import {clientUUID} from "./client-uuid";
-import {codexThreadLink,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn} from "./conversation-actions";
+import {codexThreadLink,draftFromUserInputs,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn,revertAtMessage} from "./conversation-actions";
 import {ensureRuntimeWorkspaceRoot,hasRuntimeWorkspaceRoot,runtimeWorkspaceRootsFromResponse,threadResumeIsActive} from "./thread-runtime-roots";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import ThreadPluginOptions from "./ThreadPluginOptions";
@@ -133,6 +134,7 @@ type PendingUpload = {
   previewUrl?: string;
   input: UserInput[];
   status: "uploading" | "ready";
+  restoredFromHistory?: boolean;
 };
 type ThemeChoice = "system" | "light" | "dark";
 type PushSetupState =
@@ -2015,6 +2017,7 @@ function WorkspaceApp() {
   const [authError, setAuthError] = useState("");
   const [notice, setNotice] = useState<AppNotice | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
+  const [revertingTurnId, setRevertingTurnId] = useState<string|null>(null);
   const [sharingThread,setSharingThread]=useState<ThreadSummary|null>(null);
   const noticeThreadIdRef = useRef<string | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -3705,9 +3708,11 @@ function WorkspaceApp() {
     }
   };
   const forkConversationAtMessage = async (entry:TimelineItem) => {
-    if(!client||!selectedThread?.id||!entry.turnId||forkBusy)return;
+    if(!client||!selectedThread?.id||!entry.turnId||forkBusy||revertingTurnId)return;
     if(entry.item.type!=="userMessage"&&entry.item.type!=="agentMessage")return;
     const kind=entry.item.type;
+    const sourceProjectId=selectedThread.projectId??
+      threadsRef.current.find(thread=>thread.id===selectedThread.id)?.projectId??"";
     const activeAssistantTurn=isActiveAssistantTurn(entry.turnId,kind,activeTurnId);
     const sourceDetails = threadDetails ?? {
       model: selectedThread.model,
@@ -3738,14 +3743,41 @@ function WorkspaceApp() {
       }
       const id=result?.thread?.id;
       if(!id)throw new Error("Codex did not return a forked thread.");
-      if(sourceDisabledPluginIds)
-        await client.request("thread/settings/update",{
+      let settingsError:unknown=null;
+      if(sourceDisabledPluginIds){
+        try{
+          await client.request("thread/settings/update",{
+            threadId:id,
+            disabledPluginIds:sourceDisabledPluginIds,
+          });
+        }catch(error){settingsError=error;}
+      }
+      let projectError:unknown=null;
+      try{
+        await client.request("thread/metadata/update",{
           threadId:id,
-          disabledPluginIds:sourceDisabledPluginIds,
+          projectId:sourceProjectId,
         });
+      }catch(error){projectError=error;}
       await navigateToThread(id,[],"push");
+      if(!projectError){
+        const inheritedProjectId=sourceProjectId||null;
+        const patch=(thread:ThreadSummary)=>thread.id===id
+          ?{...thread,projectId:inheritedProjectId}
+          :thread;
+        threadsRef.current=threadsRef.current.map(patch);
+        setThreads(current=>current.map(patch));
+        setSelectedThread(current=>current?.id===id?patch(current):current);
+      }
       void refreshThreads(client,false,false);
-      setNotice({tone:"success",text:"Conversation fork created."});
+      void refreshProjects(client);
+      const inheritanceErrors=[
+        projectError?"project: "+shortError(projectError):"",
+        settingsError?"plugin settings: "+shortError(settingsError):"",
+      ].filter(Boolean);
+      setNotice(inheritanceErrors.length
+        ?{tone:"error",text:"Conversation fork created, but some settings could not be inherited ("+inheritanceErrors.join("; ")+")."}
+        :{tone:"success",text:"Conversation fork created in the same project."});
     }catch(error){
       if(isInProgressForkError(error)){
         setActiveTurnId(entry.turnId);
@@ -3755,6 +3787,82 @@ function WorkspaceApp() {
         setNotice({tone:"error",text:"Could not fork conversation: "+shortError(error)});
       }
     }finally{setForkBusy(false);}
+  };
+
+  const revertConversationAtMessage = async (entry:TimelineItem) => {
+    if(!client||!selectedThread?.id||!entry.turnId||
+      entry.item.type!=="userMessage"||revertingTurnId||forkBusy)return;
+    if(turnActive||activeTurnId){
+      setNotice({tone:"info",text:"Stop the active turn before withdrawing a message."});
+      return;
+    }
+    if(selectedThread.canAcceptDirectInput===false){
+      setNotice({tone:"info",text:"This agent is controlled by its parent and cannot resend messages here."});
+      return;
+    }
+    if(composer.trim()||uploadsRef.current.length){
+      setNotice({tone:"info",text:"Send or clear the current draft before withdrawing another message."});
+      requestAnimationFrame(()=>composerRef.current?.focus());
+      return;
+    }
+    if(!window.confirm(
+      "Withdraw this message and all later conversation history? Local file changes will not be undone.",
+    ))return;
+
+    const threadId=selectedThread.id;
+    const content=Array.isArray(entry.item.content)
+      ?entry.item.content.filter(isUserInputPart)
+      :[];
+    const draft=draftFromUserInputs(content);
+    setRevertingTurnId(entry.turnId);
+    setNotice(null);
+    try{
+      await client.request("thread/revert",revertAtMessage(threadId,entry.turnId));
+      await openThread(client,threadId,false);
+      const restoredUploads:PendingUpload[]=draft.attachments.map(attachment=>{
+        const previewUrl=safeImageUrl(attachment.previewUrl);
+        return {
+          id:clientUUID(),
+          name:attachment.name,
+          size:0,
+          mime:attachment.mime,
+          kind:attachment.kind,
+          runtimeWorkspaceRoot:"",
+          ...(previewUrl?{previewUrl}:{}),
+          input:attachment.input,
+          status:"ready",
+          restoredFromHistory:true,
+        };
+      });
+      const restoredText=draft.selectedSkills.reduce((text,skill)=>
+        containsComposerToken(text,`$${skill.name}`)
+          ?text
+          :`${text}${text.trim()?"\n":""}$${skill.name}`,
+      draft.text);
+      selectedSkillsRef.current=draft.selectedSkills;
+      setComposer(restoredText);
+      updateUploads(restoredUploads);
+      setCompletionTarget(null);
+      setCompletionItems([]);
+      setNotice({tone:"success",text:"Message withdrawn. Edit the restored draft and send it again."});
+      requestAnimationFrame(()=>{
+        const textarea=composerRef.current;
+        if(!textarea)return;
+        textarea.focus();
+        textarea.style.height="auto";
+        textarea.style.height=`${textarea.scrollHeight}px`;
+      });
+    }catch(error){
+      if(!isRecord(error)||typeof error.code!=="number")
+        await openThread(client,threadId,false);
+      setNotice({
+        tone:"error",
+        text:(isRecord(error)&&typeof error.code==="number"
+          ?"Codex rejected withdrawing this message. "
+          :"Could not confirm whether the message was withdrawn. The conversation was reloaded; check its history before trying again. ")+
+          shortError(error),
+      });
+    }finally{setRevertingTurnId(null);}
   };
 
   const openAgentThread = useCallback(
@@ -4907,7 +5015,11 @@ function WorkspaceApp() {
         }
       }
       try {
-        await retainSessionUploads(uploadsAtSend.map((upload) => upload.id));
+        await retainSessionUploads(
+          uploadsAtSend
+            .filter((upload)=>!upload.restoredFromHistory)
+            .map((upload) => upload.id),
+        );
       } catch (error) {
         setNotice({
           tone: "error",
@@ -5206,7 +5318,11 @@ function WorkspaceApp() {
       }
     }
     try {
-      await retainSessionUploads(uploadsAtQueue.map((upload) => upload.id));
+      await retainSessionUploads(
+        uploadsAtQueue
+          .filter((upload)=>!upload.restoredFromHistory)
+          .map((upload) => upload.id),
+      );
     } catch (error) {
       setNotice({
         tone: "error",
@@ -6879,7 +6995,20 @@ function WorkspaceApp() {
                   entry={group.entry}
                   onOpenThread={openAgentThread}
                   onFork={forkConversationAtMessage}
-                  forkBusy={forkBusy}
+                  onRevert={revertConversationAtMessage}
+                  forkBusy={forkBusy||Boolean(revertingTurnId)}
+                  revertingTurnId={revertingTurnId}
+                  revertDisabledReason={
+                    turnActive||activeTurnId
+                      ?"Stop the active turn before withdrawing a message"
+                      :loadingThread
+                        ?"Wait for the conversation to finish loading"
+                        :sending||queueing||compactingThreadId!==null
+                          ?"Wait for the current conversation action to finish"
+                          :selectedThread?.canAcceptDirectInput===false
+                            ?"This agent is controlled by its parent"
+                            :""
+                  }
                   activeTurnId={activeTurnId}
                 />
               );
@@ -6986,7 +7115,9 @@ function WorkspaceApp() {
                       <small>
                         {upload.status === "uploading"
                           ? "Uploading…"
-                          : `${upload.kind === "image" ? "Image" : upload.mime} · ${formatAttachmentSize(upload.size)}`}
+                          : upload.restoredFromHistory
+                            ? `${upload.kind === "image" ? "Image" : "Attachment"} · restored from history`
+                            : `${upload.kind === "image" ? "Image" : upload.mime} · ${formatAttachmentSize(upload.size)}`}
                       </small>
                     </span>
                     <button
@@ -7004,10 +7135,11 @@ function WorkspaceApp() {
                           );
                           if (upload.previewUrl)
                             URL.revokeObjectURL(upload.previewUrl);
-                          void fetch(`/api/uploads/${encodeURIComponent(upload.id)}`, {
-                            method: "DELETE",
-                            credentials: "same-origin",
-                          }).catch(() => undefined);
+                          if(!upload.restoredFromHistory)
+                            void fetch(`/api/uploads/${encodeURIComponent(upload.id)}`, {
+                              method: "DELETE",
+                              credentials: "same-origin",
+                            }).catch(() => undefined);
                         }
                       }
                     >
@@ -8483,13 +8615,19 @@ function TimelineCard({
   entry,
   onOpenThread,
   onFork,
+  onRevert,
   forkBusy,
+  revertingTurnId,
+  revertDisabledReason,
   activeTurnId,
 }: {
   entry: TimelineItem;
   onOpenThread: (threadId: string, parentThreadId?: string) => void;
   onFork?: (entry:TimelineItem)=>void;
+  onRevert?: (entry:TimelineItem)=>void;
   forkBusy?: boolean;
+  revertingTurnId?: string|null;
+  revertDisabledReason?: string;
   activeTurnId?: string|null;
 }) {
   const item = entry.item;
@@ -8513,6 +8651,11 @@ function TimelineCard({
               disabled={forkBusy}
               title="Fork before this user turn"
               onClick={()=>onFork?.(entry)}><GitBranch size={12}/> Fork here</button>:null}
+            {entry.turnId ? <button type="button" className="message-revert-button"
+              disabled={forkBusy||Boolean(revertingTurnId)||Boolean(revertDisabledReason)}
+              title={revertDisabledReason||"Withdraw this message and restore it as an editable draft"}
+              onClick={()=>onRevert?.(entry)}><RotateCcw size={12}/>
+              {revertingTurnId===entry.turnId?"Withdrawing…":"Withdraw & resend"}</button>:null}
           </div>
         </div>
       </article>
