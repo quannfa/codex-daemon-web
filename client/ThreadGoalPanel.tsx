@@ -1,5 +1,5 @@
-import {Clock3,X} from "lucide-react";
-import {useEffect,useState} from "react";
+import {ChevronDown,ChevronRight,Clock3,X} from "lucide-react";
+import {useEffect,useId,useState} from "react";
 import type {RpcClient} from "./protocol";
 import {
   cancelGoalWait,
@@ -21,6 +21,7 @@ const labels:Record<ThreadGoalStatus,string>={
 };
 const editableStatuses:ThreadGoalStatus[]=["active","paused","blocked","complete"];
 const format=(value:number)=>Number.isFinite(value)?Math.round(value).toLocaleString():"—";
+const collapsedStorageKey="codex-web.thread-goal-collapsed.v1";
 
 export default function ThreadGoalPanel({
   client,threadId,revision=0,onError,onWaitCancelled,
@@ -43,6 +44,10 @@ export default function ThreadGoalPanel({
   const [waitError,setWaitError]=useState("");
   const [serverOffsetMs,setServerOffsetMs]=useState(0);
   const [nowMs,setNowMs]=useState(()=>Date.now());
+  const [collapsed,setCollapsed]=useState(()=>{
+    try{return localStorage.getItem(collapsedStorageKey)==="true";}catch{return false;}
+  });
+  const bodyId=useId();
   useEffect(()=>{
     let cancelled=false;
     setGoal(null);setLoading(true);setEditing(false);setMessage("");
@@ -151,66 +156,83 @@ export default function ThreadGoalPanel({
   const waitDeadline=wait?Date.parse(wait.until):0;
   const waitTime=wait?new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"medium"})
     .format(new Date(waitDeadline)):"";
-  return <section className="thread-goal-panel" aria-label="Conversation goal">
+  const setPanelCollapsed=(next:boolean)=>{
+    setCollapsed(next);
+    try{localStorage.setItem(collapsedStorageKey,String(next));}catch{/* Optional device persistence. */}
+  };
+  const waitSummary=waitMode==="preparing"?"Preparing wait…":waitMode==="resuming"?"Resuming now…":
+    waitMode==="waiting"?`Resumes in ${formatWaitCountdown(waitDeadline-effectiveNow)}`:"";
+  return <section className={"thread-goal-panel"+(collapsed?" collapsed":"")} aria-label="Conversation goal">
     <div className="thread-goal-heading">
       <strong>Goal mode</strong>
       {goal?<span className={"thread-goal-state state-"+goal.status}>{labels[goal.status]}</span>
         :wait?<span className="thread-goal-state state-waiting">Waiting</span>:null}
-      <span className="thread-goal-actions">
+      {collapsed&&wait?<span className="thread-goal-summary-wait" title={waitSummary}>
+        <Clock3 size={13} aria-hidden="true"/><span>{waitSummary}</span>
+      </span>:null}
+      {!collapsed?<span className="thread-goal-actions">
         {!loading&&!editing?<button type="button" onClick={()=>setReload(value=>value+1)}
           disabled={busy}>Refresh</button>:null}
-        {goal&&!editing?<button type="button" onClick={()=>setEditing(true)} disabled={busy}>Edit</button>:null}
-        {!goal&&!loading&&!editing?<button type="button" onClick={()=>setEditing(true)}>Set goal</button>:null}
-      </span>
-    </div>
-    {loading?<small>Loading goal…</small>:null}
-    {wait?<div className={"thread-goal-wait phase-"+waitMode}>
-      <Clock3 size={15} aria-hidden="true"/>
-      <div className="thread-goal-wait-copy">
-        <div className="thread-goal-wait-primary">
-          <strong>{waitMode==="preparing"?"Preparing wait…":waitMode==="resuming"?"Resuming now…":"Waiting"}</strong>
-          {waitMode==="waiting"?<span>Resumes in <time>{formatWaitCountdown(waitDeadline-effectiveNow)}</time></span>:null}
-        </div>
-        <div className="thread-goal-wait-details">
-          <span>Scheduled for <time dateTime={wait.until}>{waitTime}</time></span>
-          {wait.reason?<span>Reason: {wait.reason}</span>:null}
-        </div>
-      </div>
-      <button type="button" className="thread-goal-wait-cancel"
-        onClick={()=>void cancelWait()} disabled={waitCancelling}
-        title="Cancel wait" aria-label="Cancel wait">
-        <X size={14} aria-hidden="true"/>
-        <span>{waitCancelling?"Cancelling…":"Cancel wait"}</span>
+        {goal&&!editing?<button type="button" onClick={()=>{setPanelCollapsed(false);setEditing(true);}} disabled={busy}>Edit</button>:null}
+        {!goal&&!loading&&!editing?<button type="button" onClick={()=>{setPanelCollapsed(false);setEditing(true);}}>Set goal</button>:null}
+      </span>:null}
+      <button type="button" className="thread-goal-toggle" onClick={()=>setPanelCollapsed(!collapsed)}
+        aria-expanded={!collapsed} aria-controls={bodyId}
+        aria-label={collapsed?"Expand goal panel":"Collapse goal panel"}
+        title={collapsed?"Expand goal panel":"Collapse goal panel"}>
+        {collapsed?<ChevronRight size={16} aria-hidden="true"/>:<ChevronDown size={16} aria-hidden="true"/>}
       </button>
-    </div>:null}
-    {goal&&!editing?<>
-      <p className="thread-goal-objective">{goal.objective}</p>
-      <div className="thread-goal-metrics">
-        <span>Tokens: {format(goal.tokensUsed)}{goal.tokenBudget!==null?" / "+format(goal.tokenBudget):" (no budget)"}</span>
-        <span>Time: {format(goal.timeUsedSeconds)} sec</span>
-      </div>
-      {goal.tokenBudget&&goal.tokenBudget>0?<progress max={goal.tokenBudget} value={Math.min(goal.tokensUsed,goal.tokenBudget)} aria-label="Goal token budget usage"/>:null}
-      <div className="thread-goal-actions">
-        {editableStatuses.filter(next=>next!==goal.status).map(next=>
-          <button key={next} type="button" onClick={()=>void changeStatus(next)} disabled={busy}>{labels[next]}</button>)}
-        <button type="button" className="thread-goal-danger" onClick={()=>void clear()} disabled={busy}>Clear goal</button>
-      </div>
-    </>:null}
-    {editing?<div className="thread-goal-editor">
-      <label>Objective<textarea value={objective} rows={3} maxLength={12000}
-        onChange={event=>setObjective(event.target.value)} placeholder="Define the outcome for this conversation…"/></label>
-      <label>Token budget (optional)<input inputMode="numeric" type="number" min={1} step={1}
-        value={budget} onChange={event=>setBudget(event.target.value)} placeholder="Unlimited"/></label>
-      <label>Status<select value={status} onChange={event=>setStatus(event.target.value as ThreadGoalStatus)}>
-        {editableStatuses.map(s=><option key={s} value={s}>{labels[s]}</option>)}
-      </select></label>
-      <div className="thread-goal-actions">
-        <button type="button" disabled={busy||!objective.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save goal"}</button>
-        <button type="button" disabled={busy} onClick={()=>setEditing(false)}>Cancel</button>
-      </div>
-    </div>:null}
-    {message?<small role="status">{message}</small>:null}
-    {waitError&&!wait?<small role="status">{waitError}</small>:null}
-    <small className="thread-goal-note">Goal metadata is managed by Codex. Setting a goal does not itself start an automatic execution loop.</small>
+    </div>
+    <div className="thread-goal-body" id={bodyId} hidden={collapsed}>
+      {loading?<small>Loading goal…</small>:null}
+      {wait?<div className={"thread-goal-wait phase-"+waitMode}>
+        <Clock3 size={15} aria-hidden="true"/>
+        <div className="thread-goal-wait-copy">
+          <div className="thread-goal-wait-primary">
+            <strong>{waitMode==="preparing"?"Preparing wait…":waitMode==="resuming"?"Resuming now…":"Waiting"}</strong>
+            {waitMode==="waiting"?<span>Resumes in <time>{formatWaitCountdown(waitDeadline-effectiveNow)}</time></span>:null}
+          </div>
+          <div className="thread-goal-wait-details">
+            <span>Scheduled for <time dateTime={wait.until}>{waitTime}</time></span>
+            {wait.reason?<span>Reason: {wait.reason}</span>:null}
+          </div>
+        </div>
+        <button type="button" className="thread-goal-wait-cancel"
+          onClick={()=>void cancelWait()} disabled={waitCancelling}
+          title="Cancel wait" aria-label="Cancel wait">
+          <X size={14} aria-hidden="true"/>
+          <span>{waitCancelling?"Cancelling…":"Cancel wait"}</span>
+        </button>
+      </div>:null}
+      {goal&&!editing?<>
+        <p className="thread-goal-objective">{goal.objective}</p>
+        <div className="thread-goal-metrics">
+          <span>Tokens: {format(goal.tokensUsed)}{goal.tokenBudget!==null?" / "+format(goal.tokenBudget):" (no budget)"}</span>
+          <span>Time: {format(goal.timeUsedSeconds)} sec</span>
+        </div>
+        {goal.tokenBudget&&goal.tokenBudget>0?<progress max={goal.tokenBudget} value={Math.min(goal.tokensUsed,goal.tokenBudget)} aria-label="Goal token budget usage"/>:null}
+        <div className="thread-goal-actions">
+          {editableStatuses.filter(next=>next!==goal.status).map(next=>
+            <button key={next} type="button" onClick={()=>void changeStatus(next)} disabled={busy}>{labels[next]}</button>)}
+          <button type="button" className="thread-goal-danger" onClick={()=>void clear()} disabled={busy}>Clear goal</button>
+        </div>
+      </>:null}
+      {editing?<div className="thread-goal-editor">
+        <label>Objective<textarea value={objective} rows={3} maxLength={12000}
+          onChange={event=>setObjective(event.target.value)} placeholder="Define the outcome for this conversation…"/></label>
+        <label>Token budget (optional)<input inputMode="numeric" type="number" min={1} step={1}
+          value={budget} onChange={event=>setBudget(event.target.value)} placeholder="Unlimited"/></label>
+        <label>Status<select value={status} onChange={event=>setStatus(event.target.value as ThreadGoalStatus)}>
+          {editableStatuses.map(s=><option key={s} value={s}>{labels[s]}</option>)}
+        </select></label>
+        <div className="thread-goal-actions">
+          <button type="button" disabled={busy||!objective.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save goal"}</button>
+          <button type="button" disabled={busy} onClick={()=>setEditing(false)}>Cancel</button>
+        </div>
+      </div>:null}
+      {message?<small role="status">{message}</small>:null}
+      {waitError&&!wait?<small role="status">{waitError}</small>:null}
+      <small className="thread-goal-note">Goal metadata is managed by Codex. Setting a goal does not itself start an automatic execution loop.</small>
+    </div>
   </section>;
 }
