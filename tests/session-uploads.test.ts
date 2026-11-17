@@ -23,12 +23,19 @@ test("session uploads produce official local inputs and isolate sessions", async
   const otherSession = "session-two";
   const imageId = randomUUID();
   const fileId = randomUUID();
+  const pdfId = randomUUID();
   const image = await uploads.put(session, imageId, "photo.png", png);
   const file = await uploads.put(
     session,
     fileId,
     "notes.txt",
     Buffer.from("hello attachment"),
+  );
+  const pdf = await uploads.put(
+    session,
+    pdfId,
+    "paper.pdf",
+    Buffer.from("%PDF-1.7\n% test document"),
   );
 
   assert.equal(image.kind, "image");
@@ -37,12 +44,14 @@ test("session uploads produce official local inputs and isolate sessions", async
   assert.equal(file.kind, "file");
   assert.equal(file.input.length, 1);
   assert.match(String(file.input[0].text), /notes\.txt/);
+  assert.equal(pdf.kind, "file");
+  assert.equal(pdf.mime, "application/pdf");
   await assert.rejects(
     uploads.retain(otherSession, [imageId]),
     (error: unknown) => (error as { status?: number }).status === 404,
   );
 
-  await uploads.retain(session, [imageId, fileId]);
+  await uploads.retain(session, [imageId, fileId, pdfId]);
   await assert.rejects(
     uploads.remove(session, imageId),
     (error: unknown) => (error as { status?: number }).status === 409,
@@ -51,7 +60,7 @@ test("session uploads produce official local inputs and isolate sessions", async
   const registry = JSON.parse(
     await readFile(join(directory, "state", "uploads.json"), "utf8"),
   ) as Array<{ path: string; retained: boolean }>;
-  assert.equal(registry.length, 2);
+  assert.equal(registry.length, 3);
   assert.ok(registry.every((entry) => entry.retained));
   assert.deepEqual(await readFile(registry[0].path), png);
   assert.equal((await stat(registry[0].path)).mode & 0o777, 0o600);

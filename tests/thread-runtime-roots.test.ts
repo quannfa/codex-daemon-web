@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ensureRuntimeWorkspaceRoot,
   hasRuntimeWorkspaceRoot,
+  messageSubmissionMethod,
   runtimeWorkspaceRootsFromResponse,
 } from "../client/thread-runtime-roots";
 
@@ -64,4 +65,22 @@ test("active thread roots are left unchanged until the turn finishes", async () 
   );
   assert.deepEqual(methods, ["thread/resume"]);
   assert.deepEqual(runtimeWorkspaceRootsFromResponse(result), ["/workspace"]);
+});
+
+test("attachment delivery uses turn/start until the upload root is configured", () => {
+  assert.equal(
+    messageSubmissionMethod(true, "/uploads/session", ["/workspace"]),
+    "turn/start",
+  );
+  assert.equal(
+    messageSubmissionMethod(true, "/uploads/session", [
+      "/workspace",
+      "/uploads/session",
+    ]),
+    "turn/steer",
+  );
+  assert.equal(
+    messageSubmissionMethod(false, "/uploads/session", ["/workspace"]),
+    "turn/start",
+  );
 });

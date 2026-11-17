@@ -58,7 +58,7 @@ import FileReferenceViewer from "./FileReferenceViewer";
 import { localReferencePath } from "./resource-paths";
 import {clientUUID} from "./client-uuid";
 import {codexThreadLink,draftFromUserInputs,forkAtMessage,forkSettingsFromThread,isActiveAssistantTurn,revertAtMessage} from "./conversation-actions";
-import {ensureRuntimeWorkspaceRoot,hasRuntimeWorkspaceRoot,runtimeWorkspaceRootsFromResponse,threadResumeIsActive} from "./thread-runtime-roots";
+import {ensureRuntimeWorkspaceRoot,hasRuntimeWorkspaceRoot,messageSubmissionMethod,runtimeWorkspaceRootsFromResponse,threadResumeIsActive} from "./thread-runtime-roots";
 import CodexAccountPlugins from "./CodexAccountPlugins";
 import ThreadPluginOptions from "./ThreadPluginOptions";
 import SidebarQuota from "./SidebarQuota";
@@ -3657,6 +3657,59 @@ function WorkspaceApp() {
     [refreshThreadQueue, sessionUploadRoot, updateThreadTrail],
   );
 
+  useEffect(() => {
+    const threadId = selectedThread?.id;
+    const root = sessionUploadRoot;
+    if (
+      !client ||
+      connection !== "online" ||
+      loadingThread ||
+      turnActive ||
+      activeTurnId ||
+      !threadId ||
+      !root ||
+      selectedRef.current !== threadId ||
+      threadDetails?.runtimeWorkspaceRoots?.includes(root)
+    )
+      return;
+
+    let disposed = false;
+    let retryTimer: number | undefined;
+    let attempts = 0;
+    const synchronize = async () => {
+      attempts += 1;
+      try {
+        const response = await ensureRuntimeWorkspaceRoot(client, threadId, root);
+        if (disposed || selectedRef.current !== threadId) return;
+        const roots = runtimeWorkspaceRootsFromResponse(response);
+        if (roots.includes(root)) {
+          setThreadDetails((current) =>
+            current ? { ...current, runtimeWorkspaceRoots: roots } : current,
+          );
+          return;
+        }
+        if (!threadResumeIsActive(response) || attempts >= 4) return;
+      } catch {
+        if (attempts >= 4) return;
+      }
+      retryTimer = window.setTimeout(() => void synchronize(), attempts * 400);
+    };
+    void synchronize();
+    return () => {
+      disposed = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [
+    activeTurnId,
+    client,
+    connection,
+    loadingThread,
+    selectedThread?.id,
+    sessionUploadRoot,
+    threadDetails?.runtimeWorkspaceRoots,
+    turnActive,
+  ]);
+
   const navigateToThread = useCallback(
     (
       threadId: string,
@@ -4997,6 +5050,20 @@ function WorkspaceApp() {
     let threadId = selectedThread?.id;
     const threadIdAtSend = threadId ?? null;
     const turnIdAtSend = activeTurnId;
+    const attachmentRoot =
+      uploadsAtSend.length > 0
+        ? sessionUploadRoot ||
+          uploadsAtSend.find((upload) => upload.runtimeWorkspaceRoot)
+            ?.runtimeWorkspaceRoot ||
+          ""
+        : "";
+    const submissionMethod = messageSubmissionMethod(
+      shouldSteer,
+      attachmentRoot,
+      threadDetails?.runtimeWorkspaceRoots ?? [],
+    );
+    const turnStartActsAsSteer =
+      shouldSteer && submissionMethod === "turn/start";
     let optimisticId:string|null=null;
     try {
       if (threadIdAtSend) {
@@ -5019,55 +5086,6 @@ function WorkspaceApp() {
           return;
         }
       }
-      if (uploadsAtSend.length > 0 && threadIdAtSend) {
-        const attachmentRoot =
-          sessionUploadRoot ||
-          uploadsAtSend.find((upload) => upload.runtimeWorkspaceRoot)?.runtimeWorkspaceRoot ||
-          "";
-        if (
-          attachmentRoot &&
-          !threadDetails?.runtimeWorkspaceRoots?.includes(attachmentRoot)
-        ) {
-          if (hasActiveTurn) {
-            setNotice({
-              tone: "info",
-              text: "Wait for the current turn to finish before sending attachments.",
-            });
-            return;
-          }
-          let refreshed;
-          try {
-            refreshed = await ensureRuntimeWorkspaceRoot(
-              client,
-              threadIdAtSend,
-              attachmentRoot,
-            );
-            if (
-              threadResumeIsActive(refreshed) ||
-              !hasRuntimeWorkspaceRoot(refreshed, attachmentRoot)
-            )
-              throw new Error(
-                "The conversation is still active and cannot enable its attachment directory yet.",
-              );
-          } catch (error) {
-            setNotice({
-              tone: "info",
-              text: `Wait for the conversation to finish before sending attachments. ${shortError(error)}`,
-            });
-            return;
-          }
-          const refreshedRoots = runtimeWorkspaceRootsFromResponse(refreshed);
-          runtimeWorkspaceRoots = [
-            ...refreshedRoots,
-            ...runtimeWorkspaceRoots,
-          ].filter((root, index, roots) => roots.indexOf(root) === index);
-          setThreadDetails((current) =>
-            current
-              ? { ...current, runtimeWorkspaceRoots: refreshedRoots }
-              : current,
-          );
-        }
-      }
       try {
         await retainSessionUploads(
           uploadsAtSend
@@ -5087,7 +5105,7 @@ function WorkspaceApp() {
         selectedSkillsAtSend,
       );
 
-      if (shouldSteer) {
+      if (submissionMethod === "turn/steer") {
         const attemptKey = JSON.stringify([
           threadIdAtSend,
           turnIdAtSend,
@@ -5139,18 +5157,24 @@ function WorkspaceApp() {
       const directMessageId=clientUUID();
       const turnParams: Record<string, unknown> = {
         threadId: threadId ?? "00000000-0000-0000-0000-000000000000",
-        disabledPluginIds,
         clientUserMessageId:directMessageId,
         input,
       };
+      if (!turnStartActsAsSteer) turnParams.disabledPluginIds = disabledPluginIds;
       if (runtimeWorkspaceRoots.length)
         turnParams.runtimeWorkspaceRoots = runtimeWorkspaceRoots;
-      if (model) turnParams.model = model;
-      if (effort) turnParams.effort = effort;
-      if (selectedThread && cwd.trim() && cwd !== selectedThread.cwd)
+      if (!turnStartActsAsSteer && model) turnParams.model = model;
+      if (!turnStartActsAsSteer && effort) turnParams.effort = effort;
+      if (
+        !turnStartActsAsSteer &&
+        selectedThread &&
+        cwd.trim() &&
+        cwd !== selectedThread.cwd
+      )
         turnParams.cwd = cwd.trim();
-      if (approvalPolicy) turnParams.approvalPolicy = approvalPolicy;
-      if (sandboxMode && selectedThread) {
+      if (!turnStartActsAsSteer && approvalPolicy)
+        turnParams.approvalPolicy = approvalPolicy;
+      if (!turnStartActsAsSteer && sandboxMode && selectedThread) {
         turnParams.sandboxPolicy = {
           type:
             sandboxMode === "read-only"
@@ -5182,7 +5206,7 @@ function WorkspaceApp() {
       optimisticId=directMessageId;
       beginOptimistic({
         id:directMessageId,threadId:threadIdAtSend,
-        kind:"turn",status:"sending",input,
+        kind:turnStartActsAsSteer?"steer":"turn",status:"sending",input,
         attachments:uploadsAtSend,selectedSkills:selectedSkillsAtSend,
       },composerSourceAtSend);
 
@@ -5274,6 +5298,13 @@ function WorkspaceApp() {
           active: response.turn.status === "inProgress",
         };
         setShowOptions(false);
+      }
+      if (turnStartActsAsSteer) {
+        void refreshThreads(client, archivedThreads, false);
+        setNotice({
+          tone: "success",
+          text: "Attachment sent to the active turn.",
+        });
       }
     } catch (error) {
       if(optimisticId)

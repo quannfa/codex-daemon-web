@@ -27,6 +27,12 @@ export function detectUploadImageMime(data:Buffer,name=""):string|null{
   if(/\.svg$/i.test(name)&&/^\s*(?:<\?xml[^>]*>\s*)?<svg(?:\s|>)/i.test(data.subarray(0,4096).toString("utf8")))return "image/svg+xml";
   return null;
 }
+export function detectUploadMime(data:Buffer,name=""):string{
+  const imageMime=detectUploadImageMime(data,name);
+  if(imageMime)return imageMime;
+  if(data.subarray(0,5).toString("ascii")==="%PDF-")return "application/pdf";
+  return "application/octet-stream";
+}
 function attribute(path:string){return path.replaceAll("&","&amp;").replaceAll('"',"&quot;");}
 export function uploadInput(entry:{path:string;kind:UploadKind}):Record<string,unknown>[] {
   const parts:Record<string,unknown>[]=[{type:"text",text:':codex-file-citation{path="'+attribute(entry.path)+'" purpose="input"}',text_elements:[]}];
@@ -80,9 +86,10 @@ export class SharedUploads{
       const parent=join(this.root,grant.id),folder=join(parent,id);
       await mkdir(parent,{recursive:true,mode:0o700});
       await mkdir(folder,{mode:0o700});
-      const mime=detectUploadImageMime(data,safeName);
+      const imageMime=detectUploadImageMime(data,safeName);
+      const mime=detectUploadMime(data,safeName);
       const entry:Upload={id,shareId:grant.id,threadId:grant.threadId,name:safeName,path:join(folder,safeName),
-        size:data.length,kind:mime?"image":"file",mime:mime||"application/octet-stream",digest,createdAt:Date.now(),retained:false};
+        size:data.length,kind:imageMime?"image":"file",mime,digest,createdAt:Date.now(),retained:false};
       try{
         await writeFile(entry.path,data,{flag:"wx",mode:0o600});
         this.shares.active(grant.id);

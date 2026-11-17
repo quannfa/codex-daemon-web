@@ -49,6 +49,17 @@ export function threadResumeIsActive(response: ThreadResumeShape): boolean {
   );
 }
 
+export function messageSubmissionMethod(
+  shouldSteer: boolean,
+  attachmentRoot: string,
+  configuredRoots: readonly string[],
+): "turn/start" | "turn/steer" {
+  if (!shouldSteer) return "turn/start";
+  if (attachmentRoot && !configuredRoots.includes(attachmentRoot))
+    return "turn/start";
+  return "turn/steer";
+}
+
 /**
  * Add a root to an idle thread without losing the daemon's existing roots.
  * The app-server ignores configuration overrides while this connection is

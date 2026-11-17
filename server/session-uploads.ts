@@ -5,6 +5,7 @@ import {
   MAX_SHARED_ATTACHMENTS,
   MAX_SHARED_UPLOAD_BYTES,
   detectUploadImageMime,
+  detectUploadMime,
   normalizeUploadFilename,
   publicUpload,
   uploadIdPattern,
@@ -170,15 +171,16 @@ export class SessionUploads {
       const folder = join(parent, normalizedId);
       await mkdir(parent, { recursive: true, mode: 0o700 });
       await mkdir(folder, { mode: 0o700 });
-      const mime = detectUploadImageMime(data, safeName);
+      const imageMime = detectUploadImageMime(data, safeName);
+      const mime = detectUploadMime(data, safeName);
       const entry: SessionUpload = {
         id: normalizedId,
         scope,
         name: safeName,
         path: join(folder, safeName),
         size: data.length,
-        kind: mime ? "image" : "file",
-        mime: mime || "application/octet-stream",
+        kind: imageMime ? "image" : "file",
+        mime,
         digest,
         createdAt: Date.now(),
         retained: false,
