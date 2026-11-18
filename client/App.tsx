@@ -2739,11 +2739,11 @@ function WorkspaceApp() {
       inFlight=true;
       try{
         const response=await fetch("/api/goal-waits",{credentials:"same-origin"});
-        const data=await response.json() as {workingThreadIds?:unknown};
-        if(!response.ok||!Array.isArray(data.workingThreadIds)||
-          !data.workingThreadIds.every((value):value is string=>typeof value==="string"))return;
+        const data=await response.json() as {waitingThreadIds?:unknown};
+        if(!response.ok||!Array.isArray(data.waitingThreadIds)||
+          !data.waitingThreadIds.every((value):value is string=>typeof value==="string"))return;
         if(cancelled)return;
-        const next=new Set(data.workingThreadIds);
+        const next=new Set(data.waitingThreadIds);
         setGoalWaitThreadIds(current=>current.size===next.size&&[...next].every(id=>current.has(id))?current:next);
       }catch{/* The next poll reconciles transient WebUI errors. */}
       finally{inFlight=false;}
@@ -4475,17 +4475,17 @@ function WorkspaceApp() {
   const scheduledIndicatorIds = useMemo(() => scheduledThreadIds(scheduledTasksForIndicators), [scheduledTasksForIndicators]);
   const activeChildParentIds = useMemo(() => activeSubagentParents(subagentThreads), [subagentThreads]);
   const pendingDecisionIds = useMemo(() => new Set(approvalQueue.map((prompt) => asString(prompt.params.threadId)).filter(Boolean)), [approvalQueue]);
-  const statusForThread = useCallback((thread: ThreadSummary) => threadIndicator(thread, {
+  const indicatorForThread = useCallback((thread: ThreadSummary) => threadIndicator(thread, {
     pendingDecision: pendingDecisionIds.has(thread.id),
     activeChild: activeChildParentIds.has(thread.id),
     scheduled: scheduledIndicatorIds.has(thread.id),
     failedTurn: failedThreadIds.has(thread.id),
     goalWait: goalWaitThreadIds.has(thread.id),
-  }).kind, [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds,goalWaitThreadIds]);
+  }), [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds,goalWaitThreadIds]);
   const projectGroups: SidebarThreadGroup[] = useMemo(
     () => groupSidebarThreads(filteredThreads,codexProjects,projectPreferences.sort,archivedThreads,
-      projectPreferences.view,statusForThread),
-    [filteredThreads,codexProjects,projectPreferences.sort,projectPreferences.view,archivedThreads,status?.sidebar,statusForThread],
+      projectPreferences.view,thread=>indicatorForThread(thread).kind),
+    [filteredThreads,codexProjects,projectPreferences.sort,projectPreferences.view,archivedThreads,status?.sidebar,indicatorForThread],
   );
 
   useEffect(() => {
@@ -6619,13 +6619,7 @@ function WorkspaceApp() {
                                 onPointerCancel={clearThreadLongPress}
                               >
                                 {(() => {
-                                  const indicator = threadIndicator(thread, {
-                                    pendingDecision: pendingDecisionIds.has(thread.id),
-                                    activeChild: activeChildParentIds.has(thread.id),
-                                    scheduled: scheduledIndicatorIds.has(thread.id),
-                                    failedTurn: failedThreadIds.has(thread.id),
-                                    goalWait: goalWaitThreadIds.has(thread.id),
-                                  });
+                                  const indicator = indicatorForThread(thread);
                                   const marker = threadStatusPreferences[indicator.kind];
                                   return marker.enabled ? <span
                                     className={`thread-status-indicator thread-status-${indicator.kind}`}

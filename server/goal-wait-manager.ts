@@ -248,10 +248,8 @@ export class GoalWaitManager {
     };
   }
 
-  workingThreadIds(): string[] {
-    return this.data.waits
-      .filter((wait) => wait.resumeMode === "goal")
-      .map((wait) => wait.threadId);
+  waitingThreadIds(): string[] {
+    return this.data.waits.map((wait) => wait.threadId);
   }
 
   async cancel(threadIdValue: string): Promise<boolean> {

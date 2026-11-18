@@ -84,7 +84,7 @@ test("active goals pause immediately and resume once at the deadline", async () 
       resumeMode: "goal",
       phase: "waiting",
     });
-    assert.deepEqual(manager.workingThreadIds(), [threadId]);
+    assert.deepEqual(manager.waitingThreadIds(), [threadId]);
 
     const duplicate = await manager.register(threadId, until, "remote job");
     assert.equal(duplicate.status, "alreadyScheduled");
@@ -128,14 +128,14 @@ test("a conversation without a goal receives one deduplicated continuation", asy
       "remote job",
     );
     assert.equal(registered.resumeMode, "queue");
-    assert.deepEqual(manager.workingThreadIds(), []);
+    assert.deepEqual(manager.waitingThreadIds(), [threadId]);
     state.now += 1_000;
     await (manager as any).process(registered.waitId);
     await (manager as any).process(registered.waitId);
     assert.equal(state.queueAdds.length, 1);
     const continuation = state.queueAdds[0].input[0] as { text?: string };
     assert.match(continuation.text ?? "", /wait completed/);
-    assert.equal(manager.pending().length, 0);
+    assert.deepEqual(manager.waitingThreadIds(), []);
   } finally {
     manager.stop();
     await rm(directory, { recursive: true, force: true });

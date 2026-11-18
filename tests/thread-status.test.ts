@@ -8,10 +8,14 @@ const idleThread = {
   status: { type: "idle" },
 } as ThreadSummary;
 
-test("a goal wait is classified as working while preserving higher priority states", () => {
+test("a registered wait uses the scheduled marker even while a turn is active", () => {
   assert.deepEqual(threadIndicator(idleThread,{goalWait:true}),{
-    kind:"working",label:"Working · goal wait active",
+    kind:"waiting",label:"Scheduled task · waiting to resume",
   });
+  const activeThread = {...idleThread,status:{type:"active",activeFlags:[]}} as ThreadSummary;
+  assert.equal(threadIndicator(activeThread,{goalWait:true}).kind,"waiting");
+  assert.equal(threadIndicator(activeThread).kind,"working");
+  assert.equal(threadIndicator(idleThread).kind,"idle");
   assert.equal(threadIndicator(idleThread,{goalWait:true,pendingDecision:true}).kind,"decision");
   assert.equal(threadIndicator({...idleThread,status:{type:"systemError"}},{goalWait:true}).kind,"error");
 });
