@@ -164,7 +164,7 @@ function attachHeartbeat(socket: WebSocket, onTimeout: () => void): () => void {
   return stop;
 }
 
-function forwardSocketPair(browser: WebSocket, sessionId: string): void {
+function forwardSocketPair(browser: WebSocket, sessionId: string, threadChanged: (threadId: string) => void): void {
   let upstream: WebSocket | undefined;
   let ready = false;
   let intentionalUpstreamClose = false;
@@ -326,7 +326,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
       browser.close(1007, "invalid JSON-RPC method");
       return;
     }
-    if ((packet.method === "thread/resume" || packet.method === "thread/start" || packet.method === "thread/unsubscribe") && packet.id !== undefined) {
+    if ((packet.method === "thread/resume" || packet.method === "thread/start" || packet.method === "thread/unsubscribe" || packet.method === "thread/revert") && packet.id !== undefined) {
       const params = isJsonObject(packet.params) ? packet.params : {};
       clientThreadRequests.set(JSON.stringify(packet.id),{
         method: packet.method, threadId: typeof params.threadId === "string" ? params.threadId : "",
@@ -421,6 +421,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
               const params = packet.params;
               const turn = isJsonObject(params.turn) ? params.turn : {};
               if (typeof params.threadId === "string" && typeof turn.id === "string") {
+                threadChanged(params.threadId);
                 const key = `${params.threadId}:${turn.id}`;
                 const status = typeof turn.status === "string" ? turn.status : "unknown";
                 completedTurns.set(key,status);
@@ -452,6 +453,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
                   const id = request.threadId || (typeof thread.id === "string" ? thread.id : "");
                   if ((request.method === "thread/resume" || request.method === "thread/start") && id)
                     claimThreadWriter(id,owner);
+                  if (request.method === "thread/revert" && id) threadChanged(id);
                   // Unsubscribe relinquishes this connection's subscription.
                   if (request.method === "thread/unsubscribe") releaseThreadWriterFor(request.threadId,owner);
                 }
@@ -515,7 +517,7 @@ function forwardSocketPair(browser: WebSocket, sessionId: string): void {
   })();
 }
 
-export function attachBridge(server: Server): () => void {
+export function attachBridge(server: Server, threadChanged: (threadId: string) => void) {
   const socketSessions = new WeakMap<WebSocket, string>();
   const websocketServer = new WebSocketServer({
     noServer: true,
@@ -559,12 +561,22 @@ export function attachBridge(server: Server): () => void {
       browser.close(1008, "missing session");
       return;
     }
-    forwardSocketPair(browser, sessionId);
+    forwardSocketPair(browser, sessionId, threadChanged);
   });
-  return () => {
-    for (const browser of websocketServer.clients) {
-      browser.close(1001, "server is shutting down");
-    }
-    websocketServer.close();
+  return {
+    notifyUnread() {
+      const message = JSON.stringify({ method: "bridge/unreads/changed", params: {} });
+      for (const browser of websocketServer.clients) {
+        const session = socketSessions.get(browser);
+        if (session && isSessionActive(session) && browser.readyState === WebSocket.OPEN &&
+            browser.bufferedAmount < maxBufferedBytes) browser.send(message, { binary: false }, () => {});
+      }
+    },
+    close() {
+      for (const browser of websocketServer.clients) {
+        browser.close(1001, "server is shutting down");
+      }
+      websocketServer.close();
+    },
   };
 }

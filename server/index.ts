@@ -25,6 +25,8 @@ import { daemonAvailable, endpointLabel } from "./daemon.js";
 import { ScheduledTaskScheduler } from "./scheduled-task-scheduler.js";
 import { GoalWaitManager } from "./goal-wait-manager.js";
 import { SubagentReturnLoop } from "./subagent-return-loop.js";
+import { isReplyRef, ThreadUnreadStore, ThreadUnreadTracker } from "./thread-unread.js";
+import { daemonThreadId } from "./scheduled-task-target.js";
 import { AppServerRpc } from "./app-server-rpc.js";
 import {
   startScheduledTaskControlSocket,
@@ -51,6 +53,8 @@ const app = express();
 const server = createServer(app);
 const scheduledTaskStore = new ScheduledTaskStore(config.scheduledTasksPath);
 const goalWaits = new GoalWaitManager(config.goalWaitsPath);
+const unreadStore = new ThreadUnreadStore(resolve(dirname(config.tokenPath), "thread-unread.json"), () => bridge.notifyUnread());
+const unreadTracker = new ThreadUnreadTracker(unreadStore);
 const scheduledTaskScheduler = new ScheduledTaskScheduler(scheduledTaskStore,Date.now,AppServerRpc.connect);
 const subagentReturnLoop = new SubagentReturnLoop(config.subagentReturnPath,()=>AppServerRpc.connect(),
   threadId=>goalWaits.waitStatus(threadId)!==null);
@@ -185,6 +189,33 @@ app.get("/api/goal-waits", requireSession, (_request, response) => {
     waitingThreadIds: goalWaits.waitingThreadIds(),
     serverNow: Date.now(),
   });
+});
+
+app.get("/api/thread-unreads", requireSession, (_request, response) => {
+  response.setHeader("Cache-Control", "no-store");
+  response.json(unreadStore.snapshot());
+});
+
+app.post("/api/thread-unreads/:threadId", requireBrowserOrigin, requireSession, async (request, response, next) => {
+  response.setHeader("Cache-Control", "no-store");
+  let threadId: string;
+  try { threadId = daemonThreadId(request.params.threadId); }
+  catch { response.status(400).json({ error: "Invalid conversation ID." }); return; }
+  const { action, replies, through, manualToken } = request.body ?? {};
+  try {
+    if (action === "unread") {
+      const latest = await unreadTracker.latestReply(threadId);
+      await unreadStore.markUnread(threadId, latest);
+    } else if (action === "read" && Array.isArray(replies) && replies.length <= 200 &&
+        replies.every(isReplyRef) && (through == null || isReplyRef(through)) &&
+        (manualToken === undefined || (typeof manualToken === "string" && manualToken.length <= 64))) {
+      await unreadStore.acknowledge(threadId, replies, through ?? null, manualToken);
+    } else {
+      response.status(400).json({ error: "Invalid unread action." });
+      return;
+    }
+    response.json(unreadStore.snapshot());
+  } catch (error) { next(error); }
 });
 
 app.get("/api/goal-waits/:threadId", requireSession, (request, response) => {
@@ -504,10 +535,12 @@ app.use(
   },
 );
 
-const closeBridge = attachBridge(server);
+const bridge = attachBridge(server, threadId => unreadTracker.notify(threadId));
 
 await prepareAuthentication();
 await scheduledTaskStore.initialize();
+await unreadStore.initialize();
+unreadTracker.start();
 await goalWaits.start();
 await scheduledTaskScheduler.start();
 if (config.subagentReturnEnabled) await subagentReturnLoop.start();
@@ -531,8 +564,9 @@ function shutdown(): void {
   sharedConversations.close();
   goalWaits.stop();
   scheduledTaskScheduler.stop();
+  unreadTracker.stop();
   subagentReturnLoop.stop();
-  closeBridge();
+  bridge.close();
   void stopScheduledTaskControlSocket(scheduledTaskControlSocket).catch(
     () => undefined,
   );

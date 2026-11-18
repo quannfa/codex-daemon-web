@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   groupSidebarThreads, readProjectPreferences, buildAgentTreeRows, buildProjectCreateParams,
-  agentParentId, agentDisplayName, type CodexProject,
+  agentParentId, agentDisplayName, branchSelection, readStateGroups, type CodexProject,
 } from "../client/project-sidebar";
 import type { ThreadSummary } from "../client/types";
 
@@ -51,14 +51,17 @@ test("status view groups by status and ignores project membership",()=>{
 test("reads preferences defensively and handles blocked storage",()=>{
   const read=(value:string|null)=>readProjectPreferences({getItem:()=>value});
   assert.equal(read(null).view,"projects");
-  assert.deepEqual(read("{"),{collapsed:{},sort:"recent",view:"projects"});
+  assert.deepEqual(read("{"),{collapsed:{},sort:"recent",view:"projects",unreadOnly:false});
   assert.deepEqual(readProjectPreferences({getItem:()=>{throw Error("denied");}}),
-    {collapsed:{},sort:"recent",view:"projects"});
+    {collapsed:{},sort:"recent",view:"projects",unreadOnly:false});
   const stored=read("{\"sort\":\"name\",\"view\":\"status\",\"collapsed\":{\"p1\":true,\"invalid\":\"yes\"}}");
   assert.equal(stored.sort,"name");
   assert.equal(stored.view,"status");
   assert.equal(stored.collapsed.p1,true);
   assert.equal(stored.collapsed.invalid,undefined);
+  assert.equal(read('{"view":"read-state","unreadOnly":true}').view,"read-state");
+  assert.equal(read('{"view":"read-state","unreadOnly":true}').unreadOnly,true);
+  assert.equal(read('{"view":"other","unreadOnly":"true"}').unreadOnly,false);
 });
 
 test("nested child agent tree respects collapsed state and subagent metadata",()=>{
@@ -69,6 +72,31 @@ test("nested child agent tree respects collapsed state and subagent metadata",()
   assert.equal(agentDisplayName(agent),"Researcher");
   assert.deepEqual(buildAgentTreeRows([root],[agent],{},false).map(row=>row.depth),[0,1]);
   assert.deepEqual(buildAgentTreeRows([root],[agent],{root:true},false).map(row=>row.depth),[0]);
+});
+
+test("read states keep project and ancestor paths; unread descendants do not count as unread parents",()=>{
+  const root=thread("root","/root","p1");
+  const parent={...thread("parent","/root","p1"),parentThreadId:root.id};
+  const child={...thread("child","/root","p1"),parentThreadId:parent.id};
+  const sibling={...thread("sibling","/root","p1"),parentThreadId:parent.id};
+  const alone=thread("alone","/other","p2");
+  const orphan={...thread("orphan","/root","p1"),parentThreadId:"not-loaded"};
+  const roots=[root,alone];
+  const agents=[parent,child,sibling,orphan];
+  const unreadIds=new Set([child.id,alone.id,orphan.id]);
+  const candidates=new Set([...roots,...agents].map(t=>t.id));
+  const [unread,read]=readStateGroups(roots,agents,candidates,unreadIds,projects,"name",false);
+  assert.deepEqual([...unread.matchedIds],[alone.id,child.id]);
+  assert.deepEqual(unread.groups.map(g=>g.projectId),["p1","p2"]);
+  assert.deepEqual([...read.matchedIds],[root.id,parent.id,sibling.id]);
+  assert.deepEqual(read.groups.map(g=>g.projectId),["p1"]);
+  assert.equal(unread.descendantCounts.get(root.id),1);
+  assert.equal(unread.descendantCounts.get(parent.id),1);
+  assert.deepEqual(buildAgentTreeRows([root],agents,{},false,"",unread.visibleIds).map(r=>r.thread.id),[root.id,parent.id,child.id]);
+  assert.deepEqual(buildAgentTreeRows([root],agents,{[parent.id]:true},false,"",unread.visibleIds).map(r=>r.thread.id),[root.id,parent.id]);
+  const missing=branchSelection([],agents,unreadIds);
+  assert.equal(missing.matchedIds.size,0);
+  assert.equal(missing.visibleIds.size,0);
 });
 
 test("builds an official Codex project/create request with a stable idempotency key",()=>{

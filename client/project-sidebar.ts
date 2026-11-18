@@ -5,8 +5,11 @@ export type ProjectPreferences = {
   collapsed: Record<string, boolean>;
   sort: ProjectSort;
   view: SidebarView;
+  unreadOnly: boolean;
 };
 export const projectPreferencesKey = "codex-web.project-sidebar.v1";
+export const sidebarView = (value: unknown): SidebarView =>
+  value === "status" || value === "read-state" ? value : "projects";
 
 export function readProjectPreferences(storage: Pick<Storage, "getItem">): ProjectPreferences {
   try {
@@ -17,9 +20,10 @@ export function readProjectPreferences(storage: Pick<Storage, "getItem">): Proje
         if (typeof state === "boolean") collapsed[key] = state;
       }
     }
-    return { collapsed, sort: value?.sort === "name" ? "name" : "recent", view: value?.view === "status" ? "status" : "projects" };
+    return { collapsed, sort: value?.sort === "name" ? "name" : "recent",
+      view: sidebarView(value?.view), unreadOnly: value?.unreadOnly === true };
   } catch {
-    return { collapsed: {}, sort: "recent", view: "projects" };
+    return { collapsed: {}, sort: "recent", view: "projects", unreadOnly: false };
   }
 }
 
@@ -73,14 +77,15 @@ export function agentAncestorIds(agents: ThreadSummary[], query: string): Set<st
 
 export function buildAgentTreeRows(
   roots: ThreadSummary[], agents: ThreadSummary[], collapsed: Record<string, boolean>,
-  archived: boolean, query = "",
+  archived: boolean, query = "", visibleIds?: ReadonlySet<string>,
 ): ThreadTreeRow[] {
   const byParent = new Map<string, ThreadSummary[]>();
   const rootIds = new Set(roots.map((thread) => thread.id));
   const agentIds = new Set(agents.map((agent) => agent.id));
   for (const agent of agents) {
     const parent = agentParentId(agent);
-    if (!parent || parent === agent.id || (!rootIds.has(parent) && !agentIds.has(parent))) continue;
+    if (!parent || parent === agent.id || rootIds.has(agent.id) ||
+        (visibleIds && !visibleIds.has(agent.id)) || (!rootIds.has(parent) && !agentIds.has(parent))) continue;
     const children = byParent.get(parent) || [];
     children.push(agent);
     byParent.set(parent, children);
@@ -93,7 +98,7 @@ export function buildAgentTreeRows(
   const ancestors = query ? agentAncestorIds(agents, query) : new Set<string>();
   const rows: ThreadTreeRow[] = [];
   const visit = (thread: ThreadSummary, depth: number, inheritedMatch: boolean, path: Set<string>) => {
-    if (path.has(thread.id)) return;
+    if (path.has(thread.id) || (visibleIds && !visibleIds.has(thread.id))) return;
     const ownMatch = Boolean(query && matches(thread));
     if (query && !inheritedMatch && !ownMatch && !ancestors.has(thread.id)) return;
     const children = byParent.get(thread.id) || [];
@@ -105,6 +110,31 @@ export function buildAgentTreeRows(
   };
   for (const root of roots) visit(root,0,false,new Set());
   return rows;
+}
+
+export function branchSelection(roots: ThreadSummary[], agents: ThreadSummary[], matches: ReadonlySet<string>) {
+  const rootIds = new Set(roots.map(thread => thread.id));
+  const parents = new Map(agents.map(thread => [thread.id, agentParentId(thread)]));
+  const visibleIds = new Set<string>();
+  const descendantCounts = new Map<string, number>();
+  const matchedIds = new Set<string>();
+  for (const id of matches) {
+    let current = id;
+    const seen = new Set([id]);
+    while (!rootIds.has(current)) {
+      const parent = parents.get(current);
+      if (!parent || seen.has(parent)) break;
+      seen.add(parent);
+      current = parent;
+    }
+    if (!rootIds.has(current)) continue;
+    matchedIds.add(id);
+    for (const member of seen) {
+      visibleIds.add(member);
+      if (member !== id) descendantCounts.set(member, (descendantCounts.get(member) ?? 0) + 1);
+    }
+  }
+  return { visibleIds, descendantCounts, matchedIds };
 }
 
 /** Canonical Codex project memberships. No cwd-based inferred groups. */
@@ -128,7 +158,7 @@ export function buildProjectCreateParams(name:string, root:string, idempotencyKe
   if(!idempotencyKey)throw new Error("Project creation idempotency key is missing.");
   return {name:normalizedName,roots:[{path:normalizedRoot}],idempotencyKey};
 }
-export type SidebarView = "projects" | "status";
+export type SidebarView = "projects" | "status" | "read-state";
 export type SidebarThreadGroup = {
   cwd: string; name: string; path: string; projectId: string | null;
   kind: "project" | "unassigned" | "status";
@@ -144,15 +174,16 @@ export function groupSidebarThreads(
   projects: CodexProject[],
   sort: ProjectSort,
   archived: boolean,
-  view: SidebarView,
+  view: Exclude<SidebarView, "read-state">,
   getStatus: (thread: ThreadSummary) => string,
 ): SidebarThreadGroup[] {
   const groups = new Map<string, SidebarThreadGroup>();
   if (view === "status") {
     for (const kind of statusGroupOrder) {
-      groups.set("status:"+kind,{
-        cwd:"status:"+kind,name:statusGroupLabels[kind],path:"Parent conversations and their child agents",
-        projectId:null,kind:"status",threads:[],activity:0,
+      groups.set(view+":"+kind,{
+        cwd:view+":"+kind,name:statusGroupLabels[kind],
+        path:"Parent conversations and their child agents",
+        projectId:null,kind:view,threads:[],activity:0,
       });
     }
   } else {
@@ -165,7 +196,7 @@ export function groupSidebarThreads(
   }
   for (const thread of threads) {
     let key:string;
-    if (view === "status") key="status:"+getStatus(thread);
+    if (view === "status") key=view+":"+getStatus(thread);
     else if (thread.projectId && groups.has("project:"+thread.projectId))
       key="project:"+thread.projectId;
     else {
@@ -187,4 +218,17 @@ export function groupSidebarThreads(
   return [...groups.values()].sort((a,b)=>
     (sort==="recent"?b.activity-a.activity:0) ||
     a.name.localeCompare(b.name) || a.cwd.localeCompare(b.cwd));
+}
+
+export function readStateGroups(
+  roots: ThreadSummary[], agents: ThreadSummary[], candidates: ReadonlySet<string>,
+  unreadIds: ReadonlySet<string>, projects: CodexProject[], sort: ProjectSort, archived: boolean,
+) {
+  return (["unread", "read"] as const).map(kind => {
+    const matches = new Set([...candidates].filter(id => unreadIds.has(id) === (kind === "unread")));
+    const selection = branchSelection(roots, agents, matches);
+    const groups = groupSidebarThreads(roots.filter(root => selection.visibleIds.has(root.id)),
+      projects, sort, archived, "projects", () => "").filter(group => group.threads.length);
+    return { kind, groups, ...selection };
+  });
 }

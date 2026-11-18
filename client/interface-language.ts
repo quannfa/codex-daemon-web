@@ -189,6 +189,17 @@ const strings:Record<string,string> = {
   "Project":"项目",
   "View":"视图",
   "Work status":"工作状态",
+  "Unread / Read":"未读 / 已读",
+  "Unread":"未读",
+  "Read":"已读",
+  "Only unread":"仅看未读",
+  "No unread conversations":"没有未读会话",
+  "No read conversations":"没有已读会话",
+  "Loading read status…":"正在读取已读状态…",
+  "Read status unavailable":"暂时无法读取已读状态",
+  "Mark as read":"标记为已读",
+  "Mark as unread":"标记为未读",
+  "Could not update unread status":"无法更新未读状态",
   "Sort":"排序",
   "Recent activity":"最近活动",
   "Project name":"项目名称",
@@ -450,6 +461,8 @@ function lookup(value:string):string {
   if(!trimmed)return value;
   let result=strings[trimmed];
   if(!result){
+    const unread=trimmed.match(/^(\d+) unread descendants$/);
+    if(unread) result=unread[1]+" 个未读子会话";
     const remaining=trimmed.match(/^(\d+(?:\.\d+)?)% remaining$/);
     if(remaining) result=remaining[1]+"% 剩余";
     const used=trimmed.match(/^(\d+(?:\.\d+)?)% used$/);

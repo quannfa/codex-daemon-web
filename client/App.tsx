@@ -17,6 +17,8 @@ import {
   GitBranch,
   Link2,
   LoaderCircle,
+  Mail,
+  MailOpen,
   Menu,
   MessageSquareText,
   PanelLeftClose,
@@ -34,6 +36,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useContext,
   useCallback,
   useEffect,
@@ -80,9 +83,10 @@ import type {
   McpServerStatusListResponse,
   UserInput,
 } from "./types";
-import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, subagentSourceKinds, agentAncestorIds, buildAgentTreeRows, agentDisplayName, buildProjectCreateParams, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
+import { groupSidebarThreads, readProjectPreferences, projectPreferencesKey, sidebarView, subagentSourceKinds, branchSelection, buildAgentTreeRows, readStateGroups, agentDisplayName, buildProjectCreateParams, type CodexProject, type ProjectPreferences, type ProjectSort, type SidebarThreadGroup } from "./project-sidebar";
 import { threadIndicator, activeSubagentParents, scheduledThreadIds } from "./thread-status";
 import { readThreadStatusPreferences, threadStatusPreferencesKey, threadStatusOrder, threadStatusLabels, defaultThreadStatusPreferences } from "./thread-status-preferences";
+import { replyKey, useThreadUnreads, useUnreadSidebarThreads, useUnreadTimeline } from "./thread-unread";
 import "./styles.css";
 
 type OptimisticSubmission = {
@@ -2072,11 +2076,12 @@ function WorkspaceApp() {
 
   const threadsRef = useRef<ThreadSummary[]>([]);
   const [archivedThreads, setArchivedThreads] = useState(false);
+  const [archiveRevision, setArchiveRevision] = useState(0);
   const [threadCursor, setThreadCursor] = useState<string | null>(null);
   const [threadSearch, setThreadSearch] = useState("");
   const [projectPreferences, setProjectPreferences] = useState<ProjectPreferences>(() => {
     try { return readProjectPreferences(localStorage); }
-    catch { return { collapsed: {}, sort: "recent", view: "projects" }; }
+    catch { return { collapsed: {}, sort: "recent", view: "projects", unreadOnly: false }; }
   });
   useEffect(() => {
     try { localStorage.setItem(projectPreferencesKey, JSON.stringify(projectPreferences)); }
@@ -2279,6 +2284,12 @@ function WorkspaceApp() {
     Record<string, string[]>
   >({});
   const { client, connection, connectionMessage, attach, detach } = useRpc();
+  const [unreadRevision, setUnreadRevision] = useState(0);
+  const { threads: unreadThreads, ready: unreadReady, mutate: changeUnread } =
+    useThreadUnreads(Boolean(status?.authenticated), connection === "online", unreadRevision);
+  const unreadIds = useMemo(() => new Set(Object.keys(unreadThreads ?? {})), [unreadThreads]);
+  const sidebarThreads = useUnreadSidebarThreads(client, connection === "online", archivedThreads,
+    threads, subagentThreads, unreadIds, archiveRevision);
   useEffect(() => {
     pluginsCacheRef.current.clear();
     mcpCompletionCacheRef.current = null;
@@ -2308,6 +2319,7 @@ function WorkspaceApp() {
   } | null>(null);
   const scrollWasNearBottom = useRef(true);
   const loadVersionRef = useRef(0);
+  const olderLoadRef = useRef<{ version: number } | null>(null);
   const queueLoadVersionRef = useRef(0);
   const threadNavigationRef = useRef(false);
   const sessionExpiredRef = useRef(false);
@@ -2578,8 +2590,8 @@ function WorkspaceApp() {
   );
 
   useEffect(() => {
-    threadsRef.current = threads;
-  }, [threads]);
+    threadsRef.current = [...sidebarThreads.known.values()];
+  }, [sidebarThreads]);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -3101,6 +3113,10 @@ function WorkspaceApp() {
 
   const handleNotification = useCallback(
     (method: string, params: Record<string, unknown>) => {
+      if (method === "bridge/unreads/changed") {
+        setUnreadRevision(value => value + 1);
+        return;
+      }
       if (method === "skills/changed") {
         skillsCacheRef.current.clear();
         setSkillsRevision((current) => current + 1);
@@ -3130,9 +3146,11 @@ function WorkspaceApp() {
       }
       if (method === "thread/archived" || method === "thread/unarchived") {
         const threadId = asString(params.threadId);
+        setArchiveRevision(value => value + 1);
         setThreads((current) =>
           current.filter((entry) => entry.id !== threadId),
         );
+        setSubagentThreads((current) => current.filter(entry => entry.id !== threadId));
         return;
       }
       if (method === "serverRequest/resolved") {
@@ -3442,6 +3460,7 @@ function WorkspaceApp() {
       setItems([]);
       setThreadDetails(null);
       setLoadingThread(true);
+      setLoadingOlderItems(false);
       setItemCursor(null);
       setActiveTurnId(null);
       activeTurnSnapshotRef.current = {
@@ -3640,10 +3659,6 @@ function WorkspaceApp() {
         }
         setLoadingThread(false);
         sessionStorage.setItem(selectedThreadKey, threadId);
-        requestAnimationFrame(() => {
-          const view = timelineRef.current;
-          if (view) view.scrollTop = view.scrollHeight;
-        });
       } catch (error) {
         if (version !== loadVersionRef.current) return;
         setLoadingThread(false);
@@ -4394,9 +4409,12 @@ function WorkspaceApp() {
     return () => window.removeEventListener("keydown", onShortcut);
   }, [startNewConversationFromSidebar]);
 
-  const loadOlderItems = async () => {
-    if (!client || !selectedThread || !itemCursor) return;
-    const requestedThreadId = selectedThread.id;
+  const loadOlderItems = useCallback(async (keepPosition = true) => {
+    const requestedThreadId = selectedThread?.id;
+    const version = loadVersionRef.current;
+    if (!client || !requestedThreadId || !itemCursor || olderLoadRef.current?.version === version) return;
+    const request = { version };
+    olderLoadRef.current = request;
     setLoadingOlderItems(true);
     const view = timelineRef.current;
     const previousHeight = view?.scrollHeight ?? 0;
@@ -4411,7 +4429,7 @@ function WorkspaceApp() {
         limit: 50,
         sortDirection: "desc",
       });
-      if (selectedRef.current !== requestedThreadId) return;
+      if (selectedRef.current !== requestedThreadId || loadVersionRef.current !== version) return;
       const older = [...page.data].reverse().map((entry) => ({ ...entry }));
       setItems((current) =>
         mergeHistoryWithLive(
@@ -4420,18 +4438,33 @@ function WorkspaceApp() {
           liveItemsRef.current,
         ),
       );
-      setItemCursor(page.nextCursor);
-      requestAnimationFrame(() => {
-        if (!view) return;
+      setItemCursor(page.nextCursor === itemCursor ? null : page.nextCursor);
+      if (keepPosition) requestAnimationFrame(() => {
+        if (!view || loadVersionRef.current !== version) return;
         view.scrollTop = view.scrollHeight - previousHeight + previousTop;
       });
     } catch (error) {
-      setNotice({
+      if (loadVersionRef.current === version) setNotice({
         tone: "error",
         text: `Could not load earlier messages: ${shortError(error)}`,
       });
     } finally {
-      setLoadingOlderItems(false);
+      if (olderLoadRef.current === request) {
+        olderLoadRef.current = null;
+        if (loadVersionRef.current === version) setLoadingOlderItems(false);
+      }
+    }
+  }, [client, selectedThread?.id, itemCursor]);
+
+  const toggleThreadUnread = async (threadId: string) => {
+    const unread = unreadThreads?.[threadId];
+    try {
+      await changeUnread(threadId, unread ? {
+        action: "read", replies: unread.replies.slice(-80),
+        through: unread.replies.at(-1), manualToken: unread.manual?.token,
+      } : { action: "unread" });
+    } catch {
+      setNotice({ tone: "error", text: "Could not update unread status" });
     }
   };
 
@@ -4461,17 +4494,13 @@ function WorkspaceApp() {
     !compactingThreadId &&
     !steeringSubmissionId &&
     selectedThread?.canAcceptDirectInput !== false;
-  const filteredThreads = useMemo(() => {
-    const query = threadSearch.toLowerCase().trim();
-    if (!query) return threads;
-    const agentAncestors = agentAncestorIds(subagentThreads, query);
-    return threads.filter((thread) =>
-      agentAncestors.has(thread.id) ||
-      `${titleFor(thread)} ${thread.preview} ${thread.cwd}`
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [threadSearch, threads, subagentThreads]);
+  const sidebarQuery = threadSearch.toLowerCase().trim();
+  const sidebarCandidates = useMemo(() => new Set(sidebarQuery
+    ? buildAgentTreeRows(sidebarThreads.roots, sidebarThreads.agents, {}, archivedThreads, sidebarQuery)
+        .map(({ thread }) => thread.id)
+    : sidebarThreads.known.keys()), [sidebarThreads, sidebarQuery, archivedThreads]);
+  const unreadBranches = useMemo(() => branchSelection(sidebarThreads.roots, sidebarThreads.agents,
+    new Set([...unreadIds].filter(id => sidebarCandidates.has(id)))), [sidebarThreads, unreadIds, sidebarCandidates]);
   const scheduledIndicatorIds = useMemo(() => scheduledThreadIds(scheduledTasksForIndicators), [scheduledTasksForIndicators]);
   const activeChildParentIds = useMemo(() => activeSubagentParents(subagentThreads), [subagentThreads]);
   const pendingDecisionIds = useMemo(() => new Set(approvalQueue.map((prompt) => asString(prompt.params.threadId)).filter(Boolean)), [approvalQueue]);
@@ -4482,11 +4511,22 @@ function WorkspaceApp() {
     failedTurn: failedThreadIds.has(thread.id),
     goalWait: goalWaitThreadIds.has(thread.id),
   }), [pendingDecisionIds,activeChildParentIds,scheduledIndicatorIds,failedThreadIds,goalWaitThreadIds]);
-  const projectGroups: SidebarThreadGroup[] = useMemo(
-    () => groupSidebarThreads(filteredThreads,codexProjects,projectPreferences.sort,archivedThreads,
-      projectPreferences.view,thread=>indicatorForThread(thread).kind),
-    [filteredThreads,codexProjects,projectPreferences.sort,projectPreferences.view,archivedThreads,status?.sidebar,indicatorForThread],
-  );
+  const sidebarSections = useMemo(() => {
+    const { sort, view, unreadOnly } = projectPreferences;
+    const { roots, agents } = sidebarThreads;
+    if (view === "read-state") {
+      return readStateGroups(roots, agents, sidebarCandidates, unreadIds, codexProjects, sort, archivedThreads)
+        .filter(section => !unreadOnly || section.kind === "unread");
+    }
+    const visibleIds = unreadOnly ? unreadBranches.visibleIds : sidebarCandidates;
+    const matches = unreadOnly ? unreadBranches : null;
+    const groups = groupSidebarThreads(roots.filter(thread => visibleIds.has(thread.id)),
+      codexProjects, sort, archivedThreads, view, thread => indicatorForThread(thread).kind)
+      .filter(group => (!unreadOnly && !sidebarQuery) || group.threads.length > 0);
+    return [{ kind: null, groups, visibleIds, matchedIds: matches?.matchedIds,
+      descendantCounts: matches?.descendantCounts }];
+  }, [projectPreferences, sidebarThreads, sidebarCandidates, unreadIds, unreadBranches,
+    codexProjects, archivedThreads, indicatorForThread, sidebarQuery]);
 
   useEffect(() => {
     if (sidebarSearchOpen && sidebarSection === "chats")
@@ -6037,7 +6077,9 @@ function WorkspaceApp() {
     }
     try {
       await client.request("thread/unarchive",{threadId:thread.id});
+      setArchiveRevision(value => value + 1);
       setThreads(current=>current.filter(entry=>entry.id!==thread.id));
+      setSubagentThreads(current=>current.filter(entry=>entry.id!==thread.id));
       if(selectedThread?.id===thread.id)newConversation();
       setNotice({tone:"success",text:"Conversation restored."});
     }catch(error){
@@ -6052,7 +6094,9 @@ function WorkspaceApp() {
     try{
       await client.request("thread/archive",{threadId:thread.id});
       setArchiveConfirmThread(null);
+      setArchiveRevision(value => value + 1);
       setThreads(current=>current.filter(entry=>entry.id!==thread.id));
+      setSubagentThreads(current=>current.filter(entry=>entry.id!==thread.id));
       if(selectedThread?.id===thread.id)newConversation();
       setNotice({tone:"success",text:"Conversation archived."});
     }catch(error){
@@ -6227,11 +6271,21 @@ function WorkspaceApp() {
     );
   };
 
+  const allowsTimelineFollow = useUnreadTimeline({
+    threadId: selectedThread?.id,
+    visit: loadVersionRef.current,
+    unread: selectedThread ? unreadThreads?.[selectedThread.id] : undefined,
+    ready: unreadReady && !loadingThread && Boolean(status?.authenticated),
+    covered: mobileSidebarOpen || showSettings || showOptions || Boolean(threadContextMenu || sharingThread ||
+      archiveConfirmThread || projectCreateOpen || projectMoveThread || approvalPrompt),
+    items, cursor: itemCursor, loadOlder: loadOlderItems, timeline: timelineRef,
+    nearBottom: scrollWasNearBottom, markRead: changeUnread,
+  });
   useEffect(() => {
     const view = timelineRef.current;
-    if (!view) return;
+    if (!view || loadingThread || !allowsTimelineFollow()) return;
     if (scrollWasNearBottom.current) view.scrollTop = view.scrollHeight;
-  }, [items,visibleOptimistic.length]);
+  }, [items, visibleOptimistic.length, loadingThread, allowsTimelineFollow]);
 
   if (booting) return <LoadingScreen label="Connecting your workspace" />;
   if (!status && statusError) {
@@ -6446,11 +6500,17 @@ function WorkspaceApp() {
             <select aria-label="Conversation list view"
               value={projectPreferences.view}
               onChange={(event)=>setProjectPreferences(current=>({
-                ...current, view: event.target.value==="status"?"status":"projects",
+                ...current, view: sidebarView(event.target.value),
               }))}>
               <option value="projects">Projects</option>
               <option value="status">Work status</option>
+              <option value="read-state">Unread / Read</option>
             </select>
+          </label>
+          <label className="sidebar-unread-filter">
+            <span>Only unread</span>
+            <input type="checkbox" checked={projectPreferences.unreadOnly}
+              onChange={event => setProjectPreferences(current => ({ ...current, unreadOnly: event.target.checked }))} />
           </label>
           {projectPreferences.view === "projects" ? <label className="project-sort">
             <span>Sort</span>
@@ -6481,7 +6541,7 @@ function WorkspaceApp() {
               </span>
             ))}
           </div>
-          {filteredThreads.length === 0 ? (
+          {projectPreferences.view !== "read-state" && sidebarCandidates.size === 0 && !projectPreferences.unreadOnly ? (
             <div className="thread-list-empty">
               {threadSearch
                 ? "No matching conversations"
@@ -6490,10 +6550,15 @@ function WorkspaceApp() {
                   : "Your recent work will appear here"}
             </div>
           ) : (
-            projectGroups.map((group) => {
-              const expanded = Boolean(threadSearch.trim()) || !projectPreferences.collapsed[group.cwd];
+            sidebarSections.map(section => {
+              const { kind, visibleIds, matchedIds, descendantCounts } = section;
+              const groups = section.groups.map((group: SidebarThreadGroup) => {
+              const groupKey = kind ? `read-state:${kind}:${group.cwd}` : group.cwd;
+              const expanded = Boolean(sidebarQuery) || !projectPreferences.collapsed[groupKey];
+              const groupCount = matchedIds ? group.threads.reduce((count, { id }) =>
+                count + Number(matchedIds.has(id)) + (descendantCounts?.get(id) ?? 0), 0) : group.threads.length;
               return (
-                <section className="project-group" key={group.cwd} aria-label={group.cwd || "No project"}>
+                <section className="project-group" key={groupKey} aria-label={group.name}>
                   <div className="project-heading">
                     {projectRenameId && group.projectId === projectRenameId ? (
                       <form className="project-rename-form"
@@ -6512,14 +6577,14 @@ function WorkspaceApp() {
                           aria-expanded={expanded}
                           title={group.path}
                           onClick={()=>setProjectPreferences(current=>({
-                            ...current,collapsed:{...current.collapsed,[group.cwd]:!current.collapsed[group.cwd]},
+                            ...current,collapsed:{...current.collapsed,[groupKey]:!current.collapsed[groupKey]},
                           }))}>
                           {expanded ? <ChevronDown size={14} aria-hidden="true"/> : <ChevronRight size={14} aria-hidden="true"/>}
                           <span className="project-heading-copy">
                             <strong>{group.name}</strong>
                             <span className="project-path">{group.path}</span>
                           </span>
-                          <span className="project-thread-count" aria-label={`${group.threads.length} loaded conversations`}>{group.threads.length}</span>
+                          <span className="project-thread-count" aria-label={`${groupCount} conversations`}>{groupCount}</span>
                         </button>
                         {group.projectId ? <button type="button" className="project-heading-edit"
                           title={`Rename project ${group.name}`} aria-label={`Rename project ${group.name}`}
@@ -6530,7 +6595,11 @@ function WorkspaceApp() {
                     )}
                   </div>
                   {expanded ? <div className="project-conversations">
-                    {buildAgentTreeRows(group.threads, subagentThreads, collapsedSubagents, archivedThreads, threadSearch.toLowerCase().trim()).map(({thread, depth, childCount, expanded: agentExpanded}) => {
+                    {buildAgentTreeRows(group.threads, sidebarThreads.agents, collapsedSubagents, archivedThreads,
+                      sidebarQuery, visibleIds).map(({thread, depth, childCount, expanded: agentExpanded}) => {
+                      const isPath = Boolean(matchedIds && !matchedIds.has(thread.id));
+                      const isUnread = unreadIds.has(thread.id) && !isPath;
+                      const unreadChildren = !agentExpanded && kind !== "read" ? (unreadBranches.descendantCounts.get(thread.id) ?? 0) : 0;
                       const activityTimestamp = threadActivityTimestamp(
                         thread,
                         archivedThreads,
@@ -6539,7 +6608,7 @@ function WorkspaceApp() {
                       return (
                         <div
                           key={thread.id}
-                          className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""} ${depth ? "thread-agent-row" : ""}`}
+                          className={`thread-row ${selectedThread?.id === thread.id ? "selected" : ""} ${depth ? "thread-agent-row" : ""}${isUnread ? " thread-unread" : ""}${isPath ? " thread-context-path" : ""}`}
                           style={{ paddingLeft: Math.min(depth, 8) * 13 }}
                         >
                           {childCount ? (
@@ -6630,8 +6699,14 @@ function WorkspaceApp() {
                                   /> : null;
                                 })()}
                                 <span className="thread-copy">
-                                  <span className="thread-name">
-                                    {depth > 0 ? `Agent · ${agentDisplayName(thread) || titleFor(thread)}` : titleFor(thread)}
+                                  <span className="thread-name-line">
+                                    <span className="thread-name">
+                                      {depth > 0 ? `Agent · ${agentDisplayName(thread) || titleFor(thread)}` : titleFor(thread)}
+                                    </span>
+                                    {isUnread ? <span className="thread-unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
+                                    {unreadChildren ? <span className="thread-unread-count"
+                                      aria-label={`${unreadChildren} unread descendants`}
+                                      title={`${unreadChildren} unread descendants`}>{unreadChildren}</span> : null}
                                   </span>
                                   <span className="thread-subtitle">
                                     {activityTime ? (
@@ -6680,6 +6755,26 @@ function WorkspaceApp() {
                   </div> : null}
                 </section>
               );
+              });
+              const empty = <div className="thread-list-empty">{!unreadThreads
+                ? unreadReady ? "Read status unavailable" : "Loading read status…"
+                : sidebarQuery ? "No matching conversations"
+                  : kind === "read" ? "No read conversations" : "No unread conversations"}</div>;
+              if (!kind) return <Fragment key="sidebar">{groups.length ? groups : projectPreferences.unreadOnly ? empty : null}</Fragment>;
+              const label = kind === "unread" ? "Unread" : "Read";
+              const sectionKey = `read-state:${kind}`;
+              const expanded = Boolean(sidebarQuery) || !projectPreferences.collapsed[sectionKey];
+              return <section className={`sidebar-read-section ${kind}`} aria-label={label} key={sectionKey}>
+                <button type="button" className="sidebar-read-toggle" aria-expanded={expanded}
+                  onClick={() => setProjectPreferences(current => ({ ...current,
+                    collapsed: { ...current.collapsed, [sectionKey]: !current.collapsed[sectionKey] },
+                  }))}>
+                  {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                  <strong>{label}</strong>
+                  <span className="project-thread-count">{unreadThreads ? matchedIds?.size : "·"}</span>
+                </button>
+                {expanded ? <div className="sidebar-read-groups">{groups.length && unreadThreads ? groups : empty}</div> : null}
+              </section>;
             })
           )}
           {threadCursor && (
@@ -6752,6 +6847,14 @@ function WorkspaceApp() {
               >
                 <Pencil size={14} aria-hidden="true" />
                 <span>Rename</span>
+              </button>
+              <button type="button" role="menuitem" disabled={!unreadThreads} onClick={() => {
+                const { thread } = threadContextMenu;
+                setThreadContextMenu(null);
+                void toggleThreadUnread(thread.id);
+              }}>
+                {unreadIds.has(threadContextMenu.thread.id) ? <MailOpen size={14} aria-hidden="true" /> : <Mail size={14} aria-hidden="true" />}
+                <span>{unreadIds.has(threadContextMenu.thread.id) ? "Mark as read" : "Mark as unread"}</span>
               </button>
               <button type="button" role="menuitem"
                 onClick={()=>{
@@ -7139,6 +7242,7 @@ function WorkspaceApp() {
                 <TimelineCard
                   key={group.key}
                   entry={group.entry}
+                  trackUnread
                   onOpenThread={openAgentThread}
                   onFork={forkConversationAtMessage}
                   onRevert={revertConversationAtMessage}
@@ -8759,6 +8863,7 @@ function OptimisticMessageBubble({message,onRestore}:{
 
 function TimelineCard({
   entry,
+  trackUnread,
   onOpenThread,
   onFork,
   onRevert,
@@ -8768,6 +8873,7 @@ function TimelineCard({
   activeTurnId,
 }: {
   entry: TimelineItem;
+  trackUnread?: boolean;
   onOpenThread: (threadId: string, parentThreadId?: string) => void;
   onFork?: (entry:TimelineItem)=>void;
   onRevert?: (entry:TimelineItem)=>void;
@@ -8810,8 +8916,9 @@ function TimelineCard({
   if (item.type === "agentMessage") {
     const text = asString(item.text);
     if (!text.trim() && item.delivery !== "failed") return null;
+    const unreadKey = trackUnread && entry.turnId && item.id ? replyKey({ turnId: entry.turnId, itemId: item.id }) : undefined;
     return (
-      <article className="message-row assistant-row">
+      <article className="message-row assistant-row" data-unread-reply={unreadKey}>
         <div className="assistant-content" aria-live="polite">
           {entry.streaming ? (
             <div className="assistant-live-status">
@@ -8835,6 +8942,7 @@ function TimelineCard({
               This response could not be delivered.
             </p>
           ) : null}
+          {unreadKey ? <span className="unread-reply-end" data-unread-end={unreadKey} aria-hidden="true" /> : null}
         </div>
       </article>
     );
